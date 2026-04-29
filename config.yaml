@@ -17,7 +17,7 @@ database:
 
 redis:
   url: "redis://localhost:6379/0"
-  enabled: false  # Set true once Redis is installed
+  enabled: true  # Set true once Redis is installed
 
 simulation:
   default_difficulty: "medium"
