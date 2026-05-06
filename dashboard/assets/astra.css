@@ -1,0 +1,857 @@
+/* ============================================================================
+   ASTRA DASHBOARD — REDESIGN
+   ============================================================================
+   Design intent:
+   - Acid green accent (#d4ff5e) used sparingly for emphasis
+   - IBM Plex Sans + IBM Plex Mono — engineered personality, no AI-tool feel
+   - Medium glass: navbar, dropdowns, mode hover, score panel
+   - Subtle SVG noise texture on body — kills the "rendered" feel
+   - Tabular numerals everywhere
+   - Restrained severity palette
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500;600;700&display=swap');
+
+:root {
+    /* ── Surfaces ────────────────────────────────────────────────────── */
+    --bg-base:        #080809;
+    --bg-elevated:    #101013;
+    --bg-card:        #131318;
+    --bg-card-hover:  #181820;
+    --bg-input:       #0c0c10;
+    --bg-glass:       rgba(16, 16, 19, 0.65);
+    --bg-glass-hover: rgba(20, 20, 26, 0.75);
+
+    /* ── Borders ─────────────────────────────────────────────────────── */
+    --border-hair:    #1a1a22;
+    --border-default: #25252e;
+    --border-strong:  #383843;
+    --border-accent:  rgba(212, 255, 94, 0.35);
+
+    /* ── Text ────────────────────────────────────────────────────────── */
+    --text-primary:   #e6e6ea;
+    --text-secondary: #95959e;
+    --text-tertiary:  #5d5d68;
+    --text-disabled:  #3a3a43;
+
+    /* ── Brand accent (acid green) ───────────────────────────────────── */
+    --accent:         #d4ff5e;
+    --accent-bright:  #e8ff8a;
+    --accent-dim:     #9bbf3d;
+    --accent-glow:    rgba(212, 255, 94, 0.18);
+    --accent-soft:    rgba(212, 255, 94, 0.08);
+
+    /* ── Severity (restrained, signal-only) ──────────────────────────── */
+    --severity-info:     #6a6a75;
+    --severity-low:      #8b8b95;
+    --severity-medium:   #d9a13a;   /* warm amber, single warning color */
+    --severity-high:     #de7a3a;   /* warm orange */
+    --severity-critical: #e85a5a;   /* coral red */
+
+    --status-good:    #a3e87a;      /* desaturated green */
+    --status-pulse:   #d4ff5e;
+    --status-warn:    #d9a13a;
+    --status-bad:     #e85a5a;
+
+    /* ── Mode accents (kept distinct per mode) ───────────────────────── */
+    --mode-soc-accent:       #d4ff5e;
+    --mode-pentester-accent: #ff7a7a;
+    --mode-purple-accent:    #c490ff;
+
+    /* ── Type ────────────────────────────────────────────────────────── */
+    --font-mono: 'IBM Plex Mono', 'Berkeley Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --font-ui:   'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+    /* ── Layout ──────────────────────────────────────────────────────── */
+    --nav-height:     56px;
+    --footer-height:  32px;
+    --container-pad:  28px;
+
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 10px;
+}
+
+/* ============================================================================
+   GLOBAL RESET
+   ============================================================================ */
+* { box-sizing: border-box; }
+*::selection { background: var(--accent-glow); color: var(--accent-bright); }
+
+body, html {
+    margin: 0;
+    padding: 0;
+    background-color: var(--bg-base);
+    /* Subtle SVG noise texture - barely perceptible, kills "rendered" feel */
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0 0.5  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.55;
+    font-feature-settings: "tnum", "kern", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.app-root {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.page-container {
+    flex: 1;
+    padding: var(--container-pad);
+    max-width: 1800px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+a {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color 0.18s ease;
+}
+a:hover { color: var(--accent-bright); }
+
+/* Tabular numerals on anything with numeric data */
+.stat-value, .log-time, .log-row, .alert-time, .subscore-value, .score-number,
+.astra-card-meta, .footer, .stat-label, .alert-mitre-tag, .matrix-technique {
+    font-feature-settings: "tnum";
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+   NAVBAR — full glass treatment
+   ============================================================================ */
+.astra-nav {
+    height: var(--nav-height);
+    background: var(--bg-glass);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border-bottom: 1px solid var(--border-hair);
+    padding: 0 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 32px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.astra-nav-brand {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 17px;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* Custom logomark — geometric, drawn with CSS */
+.astra-nav-brand::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    background: var(--accent);
+    /* Custom triangular shape */
+    clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+    box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.astra-nav-links {
+    display: flex;
+    gap: 2px;
+    flex: 1;
+}
+
+.astra-nav-link {
+    padding: 7px 14px;
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    transition: all 0.15s ease;
+    text-transform: uppercase;
+    position: relative;
+}
+
+.astra-nav-link:hover {
+    color: var(--text-primary);
+    background: var(--bg-card);
+}
+
+.astra-nav-link.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.astra-nav-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+    animation: pulse 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* ============================================================================
+   FOOTER
+   ============================================================================ */
+.footer {
+    height: var(--footer-height);
+    background: var(--bg-glass);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-top: 1px solid var(--border-hair);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    user-select: none;
+}
+
+.footer-brand { color: var(--accent); font-weight: 500; }
+.footer-sep   { color: var(--border-strong); margin: 0 4px; }
+.footer-status { color: var(--status-good); }
+
+/* ============================================================================
+   CARDS
+   ============================================================================ */
+.astra-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-md);
+    padding: 22px 24px;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+.astra-card:hover {
+    border-color: var(--border-default);
+}
+
+.astra-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-hair);
+}
+
+.astra-card-title {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.astra-card-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    letter-spacing: 0.02em;
+}
+
+/* ============================================================================
+   STAT BLOCKS
+   ============================================================================ */
+.stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+    margin-bottom: 28px;
+}
+
+.stat-block {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-md);
+    padding: 16px 20px;
+    position: relative;
+    overflow: hidden;
+}
+
+/* Subtle accent strip on the side instead of the blunt left-border */
+.stat-block::before {
+    content: "";
+    position: absolute;
+    top: 14px;
+    bottom: 14px;
+    left: 0;
+    width: 2px;
+    background: var(--accent);
+    opacity: 0.5;
+    border-radius: 0 1px 1px 0;
+}
+.stat-block.severity-critical::before { background: var(--severity-critical); }
+.stat-block.severity-high::before     { background: var(--severity-high); }
+.stat-block.severity-medium::before   { background: var(--severity-medium); }
+.stat-block.status-good::before       { background: var(--status-good); }
+
+.stat-label {
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin: 0 0 8px 0;
+}
+
+.stat-value {
+    font-family: var(--font-mono);
+    font-size: 30px;
+    font-weight: 500;
+    color: var(--text-primary);
+    line-height: 1;
+    margin: 0;
+    letter-spacing: -0.01em;
+}
+
+.stat-delta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 6px;
+}
+.stat-delta.up { color: var(--status-good); }
+.stat-delta.down { color: var(--status-bad); }
+
+/* ============================================================================
+   BUTTONS
+   ============================================================================ */
+.btn-astra {
+    background: transparent;
+    border: 1px solid var(--border-default);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 9px 20px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.btn-astra:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+.btn-astra:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btn-primary-astra {
+    background: var(--accent);
+    color: var(--bg-base);
+    border-color: var(--accent);
+    font-weight: 600;
+}
+.btn-primary-astra:hover {
+    background: var(--accent-bright);
+    border-color: var(--accent-bright);
+    color: var(--bg-base);
+    box-shadow: 0 0 24px var(--accent-glow);
+}
+
+.btn-danger-astra {
+    background: transparent;
+    border-color: var(--severity-critical);
+    color: var(--severity-critical);
+}
+.btn-danger-astra:hover {
+    background: var(--severity-critical);
+    color: var(--bg-base);
+}
+
+/* ============================================================================
+   FORM CONTROLS
+   ============================================================================ */
+.astra-input {
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 9px 12px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+}
+.astra-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.astra-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+/* ============================================================================
+   LOG TABLE
+   ============================================================================ */
+.log-table-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    max-height: 600px;
+    display: flex;
+    flex-direction: column;
+}
+
+.log-table-header {
+    display: grid;
+    grid-template-columns: 80px 100px 100px 1fr 120px;
+    gap: 14px;
+    padding: 11px 18px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-hair);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.log-table-body {
+    overflow-y: auto;
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+
+.log-row {
+    display: grid;
+    grid-template-columns: 80px 100px 100px 1fr 120px;
+    gap: 14px;
+    padding: 8px 18px;
+    border-bottom: 1px solid var(--border-hair);
+    color: var(--text-secondary);
+    transition: background 0.1s, color 0.1s;
+    animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.log-row:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+
+.log-row.malicious {
+    border-left: 2px solid var(--severity-high);
+    padding-left: 16px;
+    background: linear-gradient(90deg, rgba(222, 122, 58, 0.04) 0%, transparent 30%);
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateY(-3px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.log-time     { color: var(--text-tertiary); }
+.log-source   { color: var(--accent); }
+.log-severity { font-weight: 500; }
+.log-severity.info     { color: var(--severity-info); }
+.log-severity.low      { color: var(--severity-low); }
+.log-severity.medium   { color: var(--severity-medium); }
+.log-severity.high     { color: var(--severity-high); }
+.log-severity.critical { color: var(--severity-critical); }
+.log-message  { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-host     { color: var(--text-tertiary); }
+
+/* ============================================================================
+   ALERTS
+   ============================================================================ */
+.alerts-stream {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.alert-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-left: 2px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.alert-card:hover {
+    background: var(--bg-card-hover);
+}
+
+.alert-card.severity-critical { border-left-color: var(--severity-critical); }
+.alert-card.severity-high     { border-left-color: var(--severity-high); }
+.alert-card.severity-medium   { border-left-color: var(--severity-medium); }
+.alert-card.severity-low      { border-left-color: var(--severity-low); }
+
+.alert-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.alert-severity-badge {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 2px;
+}
+.alert-severity-badge.critical { background: var(--severity-critical); color: var(--bg-base); }
+.alert-severity-badge.high     { background: var(--severity-high);     color: var(--bg-base); }
+.alert-severity-badge.medium   { background: var(--severity-medium);   color: var(--bg-base); }
+.alert-severity-badge.low      { background: var(--severity-low);      color: var(--bg-base); }
+
+.alert-time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+}
+
+.alert-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin: 4px 0;
+    letter-spacing: -0.005em;
+}
+
+.alert-meta {
+    display: flex;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+}
+
+.alert-mitre-tag {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+}
+
+/* ============================================================================
+   KILL CHAIN
+   ============================================================================ */
+.kill-chain {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px;
+    margin-bottom: 28px;
+}
+
+.kc-phase {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-sm);
+    padding: 14px 10px;
+    text-align: center;
+    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+}
+
+.kc-phase.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    box-shadow: 0 0 24px var(--accent-glow), inset 0 0 0 1px var(--accent-glow);
+}
+
+.kc-phase.completed {
+    border-color: var(--status-good);
+    background: rgba(163, 232, 122, 0.06);
+}
+
+.kc-phase-number {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-tertiary);
+    margin-bottom: 4px;
+    letter-spacing: 0.05em;
+}
+.kc-phase-name {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+}
+.kc-phase.active .kc-phase-name    { color: var(--accent); }
+.kc-phase.completed .kc-phase-name { color: var(--status-good); }
+
+/* ============================================================================
+   MITRE MATRIX
+   ============================================================================ */
+.matrix-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+}
+
+.matrix-tactic-col {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+}
+
+.matrix-tactic-header {
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-hair);
+}
+
+.matrix-technique {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 6px 9px;
+    border-radius: 3px;
+    margin-bottom: 4px;
+    background: var(--bg-input);
+    color: var(--text-tertiary);
+    transition: all 0.2s ease;
+    border-left: 2px solid transparent;
+}
+
+.matrix-technique.used     { background: rgba(217, 161, 58, 0.10); color: var(--severity-medium); border-left-color: var(--severity-medium); }
+.matrix-technique.detected { background: rgba(163, 232, 122, 0.10); color: var(--status-good);    border-left-color: var(--status-good); }
+.matrix-technique.missed   { background: rgba(232, 90, 90, 0.10);   color: var(--severity-critical); border-left-color: var(--severity-critical); }
+
+/* ============================================================================
+   SCORE PANEL — heavy glass treatment
+   ============================================================================ */
+.score-hero {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    padding: 28px 32px;
+    background: var(--bg-glass);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-lg);
+    position: relative;
+    overflow: hidden;
+}
+
+/* Subtle gradient sheen across the score hero */
+.score-hero::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent 0%, var(--accent-glow) 50%, transparent 100%);
+}
+
+.score-number {
+    font-family: var(--font-mono);
+    font-size: 68px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--accent);
+    letter-spacing: -0.03em;
+    text-shadow: 0 0 32px var(--accent-glow);
+}
+
+.score-grade {
+    font-family: var(--font-ui);
+    font-size: 16px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid currentColor;
+}
+.score-grade.excellent          { color: var(--status-good); }
+.score-grade.good               { color: var(--accent); }
+.score-grade.average            { color: var(--severity-medium); }
+.score-grade.needs_improvement  { color: var(--severity-high); }
+.score-grade.poor               { color: var(--severity-critical); }
+
+.score-breakdown {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.subscore-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+}
+
+.subscore-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-tertiary);
+}
+
+.subscore-value {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-top: 2px;
+}
+
+/* ============================================================================
+   SCROLLBARS
+   ============================================================================ */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* ============================================================================
+   ERROR / EMPTY STATES
+   ============================================================================ */
+.error-page {
+    text-align: center;
+    padding: 100px 20px;
+}
+.error-code {
+    font-family: var(--font-mono);
+    font-size: 96px;
+    font-weight: 300;
+    color: var(--accent);
+    margin: 0;
+    letter-spacing: -0.04em;
+    text-shadow: 0 0 32px var(--accent-glow);
+}
+.error-msg {
+    font-size: 16px;
+    color: var(--text-secondary);
+    margin: 16px 0 24px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+}
+
+.empty-state-icon {
+    font-size: 36px;
+    margin-bottom: 12px;
+    opacity: 0.25;
+    color: var(--accent);
+}
+
+/* ============================================================================
+   GRID LAYOUTS
+   ============================================================================ */
+.live-grid {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 18px;
+    margin-top: 18px;
+}
+@media (max-width: 1100px) {
+    .live-grid { grid-template-columns: 1fr; }
+}
+
+.section-heading {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--text-secondary);
+    margin: 28px 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.section-heading::before {
+    content: "";
+    width: 24px;
+    height: 1px;
+    background: var(--accent);
+}
+
+.page-heading {
+    font-family: var(--font-ui);
+    font-size: 24px;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    color: var(--text-primary);
+    margin: 0 0 4px 0;
+}
+
+.live-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--border-hair);
+}
+
+.session-info-row {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.launch-status {
+    margin-top: 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}

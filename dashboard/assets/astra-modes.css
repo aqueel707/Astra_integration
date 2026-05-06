@@ -1,0 +1,411 @@
+/* ============================================================================
+   MODE PICKER — redesigned cards with glass hover
+   ============================================================================ */
+
+.mode-picker-page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 60px 20px 60px;
+}
+
+.picker-header {
+    text-align: left;
+    margin-bottom: 56px;
+    padding-left: 4px;
+}
+
+.picker-heading {
+    font-family: var(--font-ui);
+    font-size: 40px;
+    font-weight: 300;
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
+    margin: 0 0 14px;
+    line-height: 1.05;
+}
+
+/* Acid green emphasis word in the heading - inject via :first-line or span */
+.picker-heading-accent {
+    color: var(--accent);
+    font-weight: 400;
+}
+
+.picker-subheading {
+    font-family: var(--font-ui);
+    font-size: 14px;
+    color: var(--text-secondary);
+    max-width: 580px;
+    margin: 0;
+    line-height: 1.65;
+}
+
+.picker-meta {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--text-tertiary);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.picker-meta::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-hair);
+}
+
+/* ── Grid of 3 cards ─────────────────────────────────────────────────────── */
+.mode-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+}
+
+@media (max-width: 1000px) {
+    .mode-picker-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Card ────────────────────────────────────────────────────────────────── */
+.mode-card-link {
+    text-decoration: none !important;
+    color: inherit !important;
+    display: block;
+}
+
+.mode-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-md);
+    padding: 28px 26px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+    isolation: isolate;
+}
+
+/* Glass overlay that appears on hover - the "medium glass" effect */
+.mode-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--bg-glass-hover);
+    backdrop-filter: blur(12px) saturate(150%);
+    -webkit-backdrop-filter: blur(12px) saturate(150%);
+    opacity: 0;
+    transition: opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: -1;
+    border-radius: var(--radius-md);
+}
+
+/* Mode-specific accent strip at top */
+.mode-card::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--mode-accent, var(--accent));
+    opacity: 0.7;
+    transition: opacity 0.35s ease, height 0.35s ease;
+}
+
+.mode-card-soc       { --mode-accent: #d4ff5e; --mode-glow: rgba(212, 255, 94, 0.15); }
+.mode-card-pentester { --mode-accent: #ff7a7a; --mode-glow: rgba(255, 122, 122, 0.15); }
+.mode-card-purple    { --mode-accent: #c490ff; --mode-glow: rgba(196, 144, 255, 0.18); }
+
+.mode-card:hover {
+    border-color: var(--mode-accent);
+    transform: translateY(-3px);
+    box-shadow:
+        0 18px 40px rgba(0, 0, 0, 0.5),
+        0 0 0 1px var(--mode-accent),
+        0 0 60px var(--mode-glow);
+}
+.mode-card:hover::before { opacity: 1; }
+.mode-card:hover::after  { opacity: 1; height: 3px; }
+
+/* ── Card content ────────────────────────────────────────────────────────── */
+.mode-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+
+.mode-icon {
+    font-size: 32px;
+    line-height: 1;
+}
+
+.mode-tagline {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    color: var(--mode-accent);
+    background: var(--mode-glow);
+    padding: 4px 9px;
+    border-radius: 2px;
+    border: 1px solid currentColor;
+    align-self: flex-start;
+    margin-top: 4px;
+}
+
+.mode-card-title {
+    font-family: var(--font-ui);
+    font-size: 22px;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    color: var(--text-primary);
+    margin: 4px 0 10px 0;
+}
+
+.mode-card-desc {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0 0 28px 0;
+    flex-shrink: 0;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────────── */
+.mode-card-section {
+    margin-bottom: 22px;
+}
+
+.mode-card-section-label {
+    font-family: var(--font-ui);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.mode-card-section-label::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-hair);
+}
+
+.mode-card-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.mode-skill-pill {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border: 1px solid var(--border-hair);
+    padding: 4px 9px;
+    border-radius: 2px;
+    letter-spacing: 0.02em;
+    transition: all 0.2s ease;
+}
+
+.mode-card:hover .mode-skill-pill {
+    border-color: var(--border-default);
+}
+
+.mode-metric-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.mode-metric-item {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 3px 0;
+    padding-left: 14px;
+    position: relative;
+    letter-spacing: 0.01em;
+}
+
+.mode-metric-item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 1px;
+    background: var(--mode-accent);
+    opacity: 0.5;
+}
+
+/* ── CTA at bottom ───────────────────────────────────────────────────────── */
+.mode-card-cta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 18px;
+    border-top: 1px solid var(--border-hair);
+    margin-top: auto;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--mode-accent);
+}
+
+.mode-cta-arrow {
+    font-size: 16px;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mode-card:hover .mode-cta-arrow {
+    transform: translateX(6px);
+}
+
+/* ============================================================================
+   LAUNCHER PAGE — mode banner
+   ============================================================================ */
+.launcher-mode-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    background: var(--bg-glass);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid var(--border-hair);
+    border-left: 2px solid var(--mode-accent, var(--accent));
+    border-radius: var(--radius-md);
+    margin-bottom: 24px;
+}
+
+.launcher-mode-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.launcher-mode-icon {
+    font-size: 26px;
+    line-height: 1;
+}
+
+.launcher-mode-text {
+    display: flex;
+    flex-direction: column;
+}
+
+.launcher-mode-label {
+    font-family: var(--font-ui);
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-primary);
+    letter-spacing: -0.005em;
+}
+
+.launcher-mode-tagline {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 3px;
+}
+
+.launcher-change-mode {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    text-decoration: none;
+    padding: 7px 12px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    transition: all 0.18s ease;
+}
+
+.launcher-change-mode:hover {
+    border-color: var(--text-secondary);
+    color: var(--text-secondary);
+    background: var(--bg-card);
+}
+
+/* ============================================================================
+   SCENARIO DESCRIPTION
+   ============================================================================ */
+.scenario-description {
+    font-family: var(--font-ui);
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: var(--bg-input);
+    border-left: 1px solid var(--border-default);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    line-height: 1.55;
+    min-height: 18px;
+    letter-spacing: 0.005em;
+}
+
+/* ============================================================================
+   PROGRESS PAGE — chart grid
+   ============================================================================ */
+.progress-grid-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+@media (max-width: 1100px) {
+    .progress-grid-2col { grid-template-columns: 1fr; }
+}
+
+.astra-card .js-plotly-plot,
+.astra-card .plot-container {
+    background: transparent !important;
+}
+
+/* ============================================================================
+   LEGEND ITEMS (matrix page)
+   ============================================================================ */
+.legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+}
+
+.legend-swatch {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+}
+
+.matrix-legend {
+    display: flex;
+    gap: 24px;
+    padding: 12px 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-sm);
+}
