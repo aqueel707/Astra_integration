@@ -94,6 +94,9 @@ def _register_routers(app: FastAPI) -> None:
     from api.routers.scoring import router as scoring_router
     from api.routers.mitre import router as mitre_router
 
+    from api.routers.progress import router as progress_router
+    from api.routers.reports import router as reports_router
+
     app.include_router(health_router, tags=["Health"])
     app.include_router(sessions_router, prefix="/sessions", tags=["Sessions"])
     app.include_router(scenarios_router, prefix="/scenarios", tags=["Scenarios"])
@@ -102,6 +105,9 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(logs_router, prefix="/logs", tags=["Logs"])
     app.include_router(scoring_router, prefix="/scoring", tags=["Scoring"])
     app.include_router(mitre_router, prefix="/mitre", tags=["MITRE ATT&CK"])
+    app.include_router(progress_router, prefix="/progress", tags=["Progress"])
+    app.include_router(reports_router, prefix="/reports", tags=["Reports"])
+
 
     # Block 2 (attacks router — optional, only if your friend added it)
     try:

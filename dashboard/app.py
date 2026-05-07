@@ -20,7 +20,7 @@ import dash
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, dcc, html
 
-from dashboard.layouts import history, leaderboard, live_session, mitre_matrix, mode_picker, progress
+from dashboard.layouts import history, leaderboard, live_session, mitre_matrix, mode_picker, progress, report_writer
 from dashboard.layouts.main import navbar
 
 
@@ -92,6 +92,14 @@ def render_page(pathname: str, current_mode):
         # Use whichever mode is in session storage; fall back to soc
         return live_session.layout(current_mode or "soc"), current_mode
 
+    if pathname.startswith("/report/"):
+        # /report/<session_id> or /report/<session_id>/<report_type>
+        parts = pathname.removeprefix("/report/").strip("/").split("/")
+        session_id = parts[0] if parts else None
+        report_type = parts[1] if len(parts) > 1 else "incident"
+        if session_id:
+            return report_writer.layout(session_id, report_type), current_mode
+        return html.Div("Missing session id"), current_mode
     if pathname.startswith("/progress"):
         return progress.layout(), current_mode
     if pathname.startswith("/history"):
@@ -117,9 +125,12 @@ from dashboard.callbacks import streaming as streaming_callbacks  # noqa: E402, 
 
 from dashboard.callbacks import progress as progress_callbacks  # noqa: E402, F401
 
+from dashboard.callbacks import report_writer as report_writer_callbacks  # noqa: E402, F401
+
 api_callbacks.register(app)
 streaming_callbacks.register(app)
 progress_callbacks.register(app)
+report_writer_callbacks.register(app)
 
 
 # ─── Scenario description sync (small UX touch) ─────────────────────────────

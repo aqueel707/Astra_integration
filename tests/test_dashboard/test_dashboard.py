@@ -386,3 +386,24 @@ class TestProgressLayout:
         from dashboard.layouts.progress import layout
         lo = layout()
         assert lo is not None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# REPORT WRITER (Block 8 Part 2)
+# ════════════════════════════════════════════════════════════════════════════
+class TestReportWriter:
+    def test_layout_renders(self):
+        from dashboard.layouts.report_writer import layout
+        lo = layout("test-session", "incident")
+        assert lo is not None
+
+    def test_layout_with_pentest_type(self):
+        from dashboard.layouts.report_writer import layout
+        lo = layout("test-session", "pentest")
+        assert lo is not None
+
+    def test_layout_default_to_incident(self):
+        from dashboard.layouts.report_writer import layout
+        # Should not crash with no report_type
+        lo = layout("test-session")
+        assert lo is not None
