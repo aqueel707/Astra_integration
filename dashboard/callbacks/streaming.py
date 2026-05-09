@@ -10,10 +10,6 @@ Architecture note:
   to the streaming backend and pushes events into a thread-safe deque per
   session. The dcc.Interval ('live-tick') fires every second to drain the
   deque into the dcc.Store, which triggers the rendering callbacks.
-
-  In practice the user starts a session by hitting POST /attacks/run/...,
-  the backend does the simulation, and we poll the API for current state
-  while also subscribing to the streaming backend for real-time events.
 """
 
 from __future__ import annotations
@@ -23,8 +19,7 @@ import logging
 import threading
 import uuid
 from collections import deque
-from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from dash import Input, Output, State, html, no_update
@@ -51,8 +46,8 @@ class _SessionBuffer:
         self.attack_status: dict[str, Any] = {}
         self.score: dict[str, Any] = {}
         self.lock = threading.Lock()
-        self.subscriber_task: asyncio.Task | None = None
-        self.loop: asyncio.AbstractEventLoop | None = None
+        # The OS thread that runs the asyncio loop. Not an asyncio.Task.
+        self.worker_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
 
 
@@ -67,28 +62,40 @@ def _get_buffer(session_id: str) -> _SessionBuffer:
         return _buffers[session_id]
 
 
+def _drop_buffer(session_id: str) -> None:
+    """Stop the worker thread (if running) and remove the buffer."""
+    with _buffers_lock:
+        buf = _buffers.pop(session_id, None)
+    if buf is not None:
+        buf.stop_event.set()
+
+
 # ════════════════════════════════════════════════════════════════════════════
-# BACKGROUND SUBSCRIBER — one per active session
+# BACKGROUND SUBSCRIBER — one thread per active session
 # ════════════════════════════════════════════════════════════════════════════
 def _start_subscriber(session_id: str):
     """Spawn a thread that subscribes to streaming for this session."""
     buf = _get_buffer(session_id)
-    if buf.subscriber_task is not None:
+    if buf.worker_thread is not None and buf.worker_thread.is_alive():
         return  # already running
 
     def _run():
         # Each thread needs its own event loop
         loop = asyncio.new_event_loop()
-        buf.loop = loop
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(_subscribe_loop(session_id, buf))
+        except Exception as e:
+            logger.exception(f"subscriber thread crashed for session={session_id}: {e}")
         finally:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     t = threading.Thread(target=_run, daemon=True, name=f"astra-sub-{session_id[:8]}")
     t.start()
-    buf.subscriber_task = t  # not actually a Task, but the slot is fine
+    buf.worker_thread = t
 
 
 async def _subscribe_loop(session_id: str, buf: _SessionBuffer):
@@ -127,6 +134,8 @@ async def _subscribe_loop(session_id: str, buf: _SessionBuffer):
                     buf.attack_status = payload
                 elif stream_name == "scores":
                     buf.score = payload
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         logger.exception(f"subscriber crashed for session={session_id}: {e}")
 
@@ -165,9 +174,10 @@ def register(app):
             with httpx.Client(timeout=5.0) as client:
                 client.post(
                     f"{api_base}/attacks/run/{scenario}",
-                    json={"session_id": session_id, "difficulty": difficulty, "stream": True},
+                    params={"session_id": session_id, "difficulty": difficulty},
                 )
         except Exception as e:
+            _drop_buffer(session_id)
             return no_update, no_update, html.Div(
                 f"⚠ Failed to launch: {e}",
                 style={"color": "var(--severity-critical)", "marginTop": "12px"},
@@ -200,9 +210,10 @@ def register(app):
             attack_status = dict(buf.attack_status)
             score = dict(buf.score)
 
+        prev = prev_stats or {}
         # Build stats
-        coverage = score.get("mitre_coverage_pct", prev_stats.get("coverage_pct", 0)) if score else prev_stats.get("coverage_pct", 0)
-        score_value = score.get("total_score", prev_stats.get("score", 0)) if score else prev_stats.get("score", 0)
+        coverage = score.get("mitre_coverage_pct", prev.get("coverage_pct", 0)) if score else prev.get("coverage_pct", 0)
+        score_value = score.get("total_score", prev.get("score", 0)) if score else prev.get("score", 0)
 
         # Phase tracking from attack_status
         phase_name = (attack_status.get("current_phase") or "").lower()
@@ -304,21 +315,18 @@ def register(app):
         if not stats:
             return empty_chart("0%", height=140), empty_chart("", height=60)
         coverage_pct = float(stats.get("coverage_pct", 0))
-        # The score_full dict contains MITRE detail
         score_full = stats.get("score_full") or {}
         mitre = score_full.get("details", {}).get("mitre", {})
         detected = mitre.get("techniques_detected", 0) if isinstance(mitre, dict) else 0
         used     = mitre.get("techniques_used", 0)     if isinstance(mitre, dict) else 0
         donut = coverage_donut(coverage_pct, detected=detected, total=used)
 
-        # For sparkline, fetch recent scores. Cheap polling:
+        # For sparkline, fetch recent scores (cheap polling)
         history = []
         try:
-            import httpx
             with httpx.Client(timeout=2.0) as client:
                 r = client.get(f"{api_base}/scoring/leaderboard?limit=10")
                 r.raise_for_status()
-                # Reverse so oldest first
                 history = [e.get("total_score", 0) for e in reversed(r.json())]
         except Exception:
             pass
@@ -333,9 +341,10 @@ def register(app):
         Input("abort-button", "n_clicks"),
         State("active-session", "data"),
         State("api-base", "data"),
+        State("active-mode", "data"),
         prevent_initial_call=True,
     )
-    def abort_session(n_clicks, session_id, api_base):
+    def abort_session(n_clicks, session_id, api_base, mode):
         if not n_clicks or not session_id:
             return no_update, no_update, no_update
         # Tell backend to stop
@@ -344,19 +353,20 @@ def register(app):
                 client.post(f"{api_base}/attacks/abort", json={"session_id": session_id})
         except Exception:
             pass
-        # Stop the subscriber
-        buf = _get_buffer(session_id)
-        buf.stop_event.set()
+        # Stop the subscriber thread
+        _drop_buffer(session_id)
         # Reset to launcher form
         from dashboard.layouts.live_session import _launcher_form
-        return None, True, _launcher_form()
+        from dashboard.layouts.mode_picker import MODES
+        _mode_obj = next((m for m in MODES if m["id"] == (mode or "soc")), MODES[0])
+        return None, True, _launcher_form(_mode_obj)
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # HELPERS
 # ════════════════════════════════════════════════════════════════════════════
 def _phase_to_index(phase_name: str) -> int:
-    """Map phase name strings to kill chain indices."""
+    """Map phase name strings to kill chain strip indices (0-6)."""
     mapping = {
         "reconnaissance": 0, "recon": 0,
         "delivery": 1, "initial_access": 1, "initial-access": 1,
