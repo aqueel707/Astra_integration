@@ -28,6 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_db
 from db import crud
 from core.attack_engine.orchestrator import AttackOrchestrator
+import asyncio
+from core.session_driver import (
+    SessionDriver,
+    drop_driver,
+    get_driver,
+    register_driver,
+    register_task,
+)
 
 logger = logging.getLogger("astra.api.attacks")
 router = APIRouter()
@@ -189,61 +197,65 @@ async def next_step(body: NextStepRequest, db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/run/{scenario_id}")
-async def run_scenario_stream(
+@router.post("/run/{scenario_id}", status_code=202)
+async def run_scenario_background(
     scenario_id:   str,
     session_id:    str,
     difficulty:    str = "medium",
     target_ip:     Optional[str] = None,
     step_delay_ms: int = 800,
-    db: AsyncSession = Depends(get_db),
+    db:            AsyncSession = Depends(get_db),
 ):
     """
-    Stream a full scenario as newline-delimited JSON (NDJSON).
-    Each line is one AttackStep JSON object.
-    Use this to feed the WebSocket / dashboard live attack feed.
-
-    Client reads: response.body line-by-line, parse each as JSON.
+    Kick off a full Red→Blue session as a background task.
+    Returns 202 immediately; driver pushes events to streaming channels.
     """
     session = await crud.get_session(db, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    if get_driver(session_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session {session_id} is already running",
+        )
+
     await crud.update_session_status(db, session_id, "running")
 
-    orch = _get_orchestrator(session_id)
+    driver = SessionDriver(session_id=session_id)
+    register_driver(session_id, driver)
 
-    async def _generate():
-        try:
-            async for step in orch.run_scenario_async(
-                scenario_id=scenario_id,
-                difficulty=difficulty,
-                target_ip=target_ip,
-                step_delay_ms=step_delay_ms,
-            ):
-                data = {
-                    "step_number":    step.step_number,
-                    "phase":          step.phase,
-                    "technique_id":   step.technique_id,
-                    "technique_name": step.technique_name,
-                    "tactic":         step.tactic,
-                    "description":    step.description,
-                    "source_host":    step.source_host,
-                    "target_host":    str(step.target_host) if step.target_host else None,
-                    "success":        step.success,
-                    "severity":       step.severity,
-                    "timestamp":      step.timestamp.isoformat(),
-                    "extra_data":     step.extra_data,
-                }
-                yield json.dumps(data) + "\n"
+    task = asyncio.create_task(
+        driver.run(
+            scenario_id=scenario_id,
+            difficulty=difficulty,
+            target_ip=target_ip,
+            step_delay_ms=step_delay_ms,
+        ),
+        name=f"session-driver:{session_id}",
+    )
+    register_task(session_id, task)
 
-            # Final summary line
-            yield json.dumps({"done": True, "message": "Scenario complete"}) + "\n"
-        finally:
-            _drop_orchestrator(session_id)
+    def _on_done(t):
+        if get_driver(session_id) is driver:
+            drop_driver(session_id)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    f"[attacks] session {session_id} task ended with: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
-    return StreamingResponse(_generate(), media_type="application/x-ndjson")
+    task.add_done_callback(_on_done)
 
+    return {
+        "status":      "accepted",
+        "session_id":  session_id,
+        "scenario_id": scenario_id,
+        "difficulty":  difficulty,
+        "message":     "Session started in background.",
+    }
 
 @router.get("/status")
 async def attack_status(session_id: str):

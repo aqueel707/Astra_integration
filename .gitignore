@@ -3,3 +3,20 @@
 astra.db
 __pycache__/
 *.pyc
+
+# Python bytecode (was being tracked by mistake)
+__pycache__/
+*.pyc
+
+# Local environment
+.env
+.env.local
+
+# Local fixes / one-shot scripts
+*.bak
+apply_attacks_patch.py
+
+# Local data
+*.db
+*.sqlite
+*.sqlite-journal

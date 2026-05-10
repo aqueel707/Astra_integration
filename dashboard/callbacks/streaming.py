@@ -35,6 +35,26 @@ from dashboard.components.renderers import (
 logger = logging.getLogger("astra.dashboard.streaming")
 
 
+# Maps the dashboard's "mode" picker (mode_picker.py) to the API's `role` field
+# (api/schemas/session.py: SessionCreate uses pattern ^(red_team|blue_team|full_spectrum)$).
+_MODE_TO_ROLE = {
+    "soc":       "blue_team",
+    "pentester": "red_team",
+    "purple":    "full_spectrum",
+}
+
+# Maps the dashboard's difficulty values to the API's accepted set. The
+# dashboard exposes "easy" for friendlier copy, but SessionCreate only
+# accepts beginner/medium/hard/expert. Keep the others identity-mapped.
+_DIFFICULTY_MAP = {
+    "easy":     "beginner",
+    "beginner": "beginner",
+    "medium":   "medium",
+    "hard":     "hard",
+    "expert":   "expert",
+}
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # THREAD-SAFE EVENT BUFFER per session
 # ════════════════════════════════════════════════════════════════════════════
@@ -147,6 +167,9 @@ def register(app):
     """Register live-session callbacks."""
 
     # ── Launch button → start session via API ───────────────────────────
+    # Two-step flow:
+    #   1. POST /sessions  → create a DB row, get a real session_id
+    #   2. POST /attacks/run/<scenario>  → kick off the background driver
     @app.callback(
         Output("active-session", "data"),
         Output("live-tick", "disabled"),
@@ -155,27 +178,62 @@ def register(app):
         Input("launch-button", "n_clicks"),
         State("launcher-scenario", "value"),
         State("launcher-difficulty", "value"),
+        State("active-mode", "data"),
         State("api-base", "data"),
         prevent_initial_call=True,
     )
-    def launch_session(n_clicks, scenario, difficulty, api_base):
+    def launch_session(n_clicks, scenario, difficulty, mode, api_base):
         if not n_clicks or not scenario:
             return no_update, no_update, no_update, no_update
 
-        # Generate a session ID locally (the API will accept whatever we give it)
-        session_id = str(uuid.uuid4())
+        # Map dashboard mode → API role
+        role = _MODE_TO_ROLE.get(mode or "soc", "blue_team")
+        # Map dashboard difficulty → API difficulty (the dashboard exposes
+        # "easy" but the SessionCreate schema only accepts beginner/medium/hard/expert)
+        api_difficulty = _DIFFICULTY_MAP.get(difficulty, "medium")
+
+        # ── Step 1: create the session in the DB ─────────────────────────
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.post(
+                    f"{api_base}/sessions",
+                    json={
+                        "username":    "demo",
+                        "scenario_id": scenario,
+                        "role":        role,
+                        "difficulty":  api_difficulty,
+                    },
+                )
+            if resp.status_code not in (200, 201):
+                detail = resp.text[:200]
+                return no_update, no_update, html.Div(
+                    f"⚠ Failed to create session ({resp.status_code}): {detail}",
+                    style={"color": "var(--severity-critical)", "marginTop": "12px"},
+                ), no_update
+            session_id = resp.json()["id"]
+        except Exception as e:
+            return no_update, no_update, html.Div(
+                f"⚠ Failed to create session: {e}",
+                style={"color": "var(--severity-critical)", "marginTop": "12px"},
+            ), no_update
 
         # Start the subscriber BEFORE the simulation starts — so we don't miss events
         _start_subscriber(session_id)
 
-        # Tell the backend to run the scenario
-        # Note: this is fire-and-forget; the backend will publish events to streaming
+        # ── Step 2: kick off the background attack driver ────────────────
         try:
             with httpx.Client(timeout=5.0) as client:
-                client.post(
+                run_resp = client.post(
                     f"{api_base}/attacks/run/{scenario}",
-                    params={"session_id": session_id, "difficulty": difficulty},
+                    params={"session_id": session_id, "difficulty": api_difficulty},
                 )
+            if run_resp.status_code not in (200, 201, 202):
+                _drop_buffer(session_id)
+                detail = run_resp.text[:200]
+                return no_update, no_update, html.Div(
+                    f"⚠ Failed to launch ({run_resp.status_code}): {detail}",
+                    style={"color": "var(--severity-critical)", "marginTop": "12px"},
+                ), no_update
         except Exception as e:
             _drop_buffer(session_id)
             return no_update, no_update, html.Div(
@@ -184,9 +242,9 @@ def register(app):
             ), no_update
 
         # Replace launcher form with the live grid
-        live_grid = _build_live_grid(session_id, scenario, difficulty)
+        live_grid = _build_live_grid(session_id, scenario, api_difficulty)
         return session_id, False, html.Div(
-            f"✓ Session {session_id[:8]} launched — {scenario} / {difficulty}",
+            f"✓ Session {session_id[:8]} launched — {scenario} / {api_difficulty}",
             style={"color": "var(--status-good)", "marginTop": "12px"},
         ), live_grid
 
