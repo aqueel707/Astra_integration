@@ -1205,3 +1205,20 @@ a:hover { color: var(--accent-bright); }
 /* error + footer */
 .auth-error { color: var(--severity-critical); }
 .auth-foot { color: var(--text-tertiary); letter-spacing: 0.34em; }
+
+/* ── Leaderboard grade badge: contain so it never overflows its column ── */
+.score-grade {
+  display: inline-block;
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;          /* was 16px — too wide for the 120px column */
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  text-transform: none;     /* humanized label already cased in the renderer */
+  text-align: center;
+}
+/* Leaderboard coverage % was near-invisible — lift contrast */
+.log-row .log-host:last-child { color: var(--text-secondary); }
