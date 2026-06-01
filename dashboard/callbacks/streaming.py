@@ -372,7 +372,7 @@ def register(app):
         State("auth-token", "data"),
         State("active-mode", "data"),
     )
-    def render_donut_and_sparkline(stats, api_base, mode, token):
+    def render_donut_and_sparkline(stats, api_base, token, mode):
         from dashboard.components.charts import coverage_donut, score_sparkline, empty_chart
         if not stats:
             return empty_chart("0%", height=140), empty_chart("", height=60)
@@ -407,7 +407,7 @@ def register(app):
         State("active-mode", "data"),
         prevent_initial_call=True,
     )
-    def abort_session(n_clicks, session_id, api_base, mode, token):
+    def abort_session(n_clicks, session_id, api_base, token, mode):
         if not n_clicks or not session_id:
             return no_update, no_update, no_update
         # Tell backend to stop
