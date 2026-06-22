@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import crud
-from db.models import Alert, Session as SessionModel, User
+from db.models import Alert, DetectionRule, Session as SessionModel, User
 
 
 async def verify_session_owner(db: AsyncSession, session_id: str, user: User) -> SessionModel:
@@ -50,3 +50,28 @@ async def verify_alert_owner(db: AsyncSession, alert_id: str, user: User) -> Ale
         # Same 404 + message as "not found" so we don't reveal the id exists.
         raise HTTPException(status_code=404, detail="Alert not found")
     return alert
+
+
+async def verify_rule_owner(db: AsyncSession, rule_id: str, user: User) -> DetectionRule:
+    """Return the rule iff the caller may read it, else 404.
+
+    Default (global) rules are readable by everyone. Non-default rules belong
+    to the session that created them, so we check that the rule's session is
+    owned by `user`.
+
+    NOTE: this governs READ access only. Callers that MUTATE a rule must
+    additionally refuse `is_default` rules themselves — a global rule must not
+    be editable/deletable/toggleable by an individual user.
+    """
+    result = await db.execute(select(DetectionRule).where(DetectionRule.id == rule_id))
+    rule = result.scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+    if rule.is_default:
+        return rule  # global, readable by all
+
+    session = await crud.get_session(db, rule.session_id) if rule.session_id else None
+    if session is None or session.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return rule
