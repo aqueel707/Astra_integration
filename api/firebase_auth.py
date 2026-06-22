@@ -41,6 +41,8 @@ from sqlalchemy import select
 from api.deps import get_db
 from db.models import User
 
+from api.email_allowlist import assert_allowed_email
+
 logger = logging.getLogger("astra.firebase_auth")
 
 # ---------------------------------------------------------------------------
@@ -72,8 +74,6 @@ def _get_firebase_credentials():
     )
 
 
-
-
 def _init_firebase() -> bool:
     """
     Initialise the Firebase Admin SDK if FIREBASE_PROJECT_ID is set.
@@ -99,8 +99,8 @@ def _init_firebase() -> bool:
         from firebase_admin import credentials
 
         if not firebase_admin._apps:
-            firebase_admin.initialize_app(credential=_get_firebase_credentials(), 
-                
+            firebase_admin.initialize_app(
+                credential=_get_firebase_credentials(),
                 options={"projectId": project_id},
             )
         _firebase_initialised = True
@@ -256,6 +256,9 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing uid claim.",
         )
+
+    # Only allow accounts from approved email providers (see email_allowlist.py)
+    assert_allowed_email(email)
 
     user = await _get_or_create_user_from_firebase(db, uid, email, name)
     return user
