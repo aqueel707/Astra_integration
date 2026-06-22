@@ -13,18 +13,20 @@ How it works:
      the User ORM object as a FastAPI dependency.
 
 Setup:
-  Set these environment variables on Koyeb (or in .env locally):
+  Set these environment variables in production (Render) or .env locally:
     FIREBASE_PROJECT_ID=your-project-id   (e.g. "astra-cyber-abc12")
+    FIREBASE_SERVICE_ACCOUNT_B64=<base64 of the service-account JSON>
 
   The firebase-admin SDK automatically fetches Firebase's public keys
   from Google — no private key needed for server-side token verification.
-  (Private key would only be needed for creating custom tokens, which we
-  don't do.)
 
-Local development without Firebase:
-  If FIREBASE_PROJECT_ID is not set, get_current_user falls back to the
-  demo user so local development still works without Firebase configured.
-  Set FIREBASE_ENABLED=false in your local .env to force this.
+Auth modes (IMPORTANT — fail closed):
+  - Production: FIREBASE_PROJECT_ID is set and FIREBASE_ENABLED != "false".
+    If Firebase fails to initialise (bad/missing credentials), the request
+    is REFUSED (503) — we never silently demote to the shared demo user.
+  - Local dev: leave FIREBASE_PROJECT_ID unset, or set FIREBASE_ENABLED=false,
+    to intentionally run without Firebase (all requests become the demo user).
+    This fallback only happens when Firebase is *deliberately* disabled.
 """
 
 from __future__ import annotations
@@ -76,8 +78,13 @@ def _get_firebase_credentials():
 
 def _init_firebase() -> bool:
     """
-    Initialise the Firebase Admin SDK if FIREBASE_PROJECT_ID is set.
-    Returns True if Firebase is active, False if running in dev-fallback mode.
+    Initialise the Firebase Admin SDK.
+
+    Returns True if Firebase is active. Returns False ONLY when Firebase is
+    intentionally disabled for local dev (FIREBASE_PROJECT_ID unset, or
+    FIREBASE_ENABLED=false). RAISES if Firebase is meant to be on but fails to
+    initialise — so production fails CLOSED instead of silently demoting every
+    request to the shared demo user.
     """
     global _firebase_initialised
 
@@ -87,6 +94,7 @@ def _init_firebase() -> bool:
     project_id = os.environ.get("FIREBASE_PROJECT_ID")
     enabled = os.environ.get("FIREBASE_ENABLED", "true").lower() != "false"
 
+    # Intentional dev mode -> allow the demo fallback in get_current_user.
     if not project_id or not enabled:
         logger.warning(
             "[firebase] FIREBASE_PROJECT_ID not set or FIREBASE_ENABLED=false — "
@@ -94,21 +102,19 @@ def _init_firebase() -> bool:
         )
         return False
 
-    try:
-        import firebase_admin
-        from firebase_admin import credentials
+    # Production: Firebase MUST initialise. If it can't, let the error
+    # propagate so get_current_user fails CLOSED — we never silently demote
+    # to the shared demo user (that would be a full auth bypass).
+    import firebase_admin
 
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(
-                credential=_get_firebase_credentials(),
-                options={"projectId": project_id},
-            )
-        _firebase_initialised = True
-        logger.info(f"[firebase] Initialised for project {project_id}")
-        return True
-    except Exception as e:
-        logger.exception(f"[firebase] Init failed: {e}")
-        return False
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(
+            credential=_get_firebase_credentials(),
+            options={"projectId": project_id},
+        )
+    _firebase_initialised = True
+    logger.info(f"[firebase] Initialised for project {project_id}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +131,7 @@ async def _verify_firebase_token(token: str) -> dict:
     """
     try:
         from firebase_admin import auth as firebase_auth
-        decoded = firebase_auth.verify_id_token(token, check_revoked=False)
+        decoded = firebase_auth.verify_id_token(token, check_revoked=True)
         return decoded
     except Exception as e:
         logger.warning(f"[firebase] Token verification failed: {e}")
@@ -213,12 +219,23 @@ async def get_current_user(
         ):
             ...
 
-    In development mode (no FIREBASE_PROJECT_ID set), always returns
-    the demo user so local development works without Firebase config.
+    In intentional dev mode (no FIREBASE_PROJECT_ID, or FIREBASE_ENABLED=false)
+    returns the demo user so local development works without Firebase config.
+    In production, a Firebase init failure returns 503 (fail closed), never the
+    demo user.
     """
-    firebase_active = _init_firebase()
+    try:
+        firebase_active = _init_firebase()
+    except Exception as e:
+        # Firebase is configured but failed to initialise -> fail CLOSED.
+        # Refuse the request instead of treating everyone as the demo user.
+        logger.exception(f"[firebase] init error — refusing request: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication is temporarily unavailable.",
+        )
 
-    # ── Development fallback ────────────────────────────────────────────
+    # ── Development fallback (only when Firebase is intentionally disabled) ──
     if not firebase_active:
         result = await db.execute(
             select(User).where(User.username == "demo")
