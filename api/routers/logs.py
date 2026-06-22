@@ -54,7 +54,7 @@ async def list_logs(
     source: str | None = None,
     is_malicious: bool | None = None,
     limit: int = Query(100, le=1000),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10_000),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
