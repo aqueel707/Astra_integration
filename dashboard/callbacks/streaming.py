@@ -338,28 +338,36 @@ def register(app):
         Output("stat-coverage", "children"),
         Output("stat-score", "children"),
         Output("kill-chain-strip", "children"),
-        Output("score-number", "children"),
-        Output("score-grade", "children"),
-        Output("score-grade", "className"),
-        Output("score-subscores", "children"),
         Input("live-stats-store", "data"),
     )
     def render_stats(stats):
         if not stats:
-            return ("0", "0", "0%", "0", no_update, "0", "—", "score-grade", [])
-
+            return ("0", "0", "0%", "0", no_update)
         kc = render_kill_chain(stats.get("current_phase", -1), stats.get("completed_phases", []))
-
-        score_full = stats.get("score_full") or {}
-        grade = score_full.get("grade", "—")
         score_val = stats.get("score", 0)
-
         return (
             str(stats.get("logs_count", 0)),
             str(stats.get("alerts_count", 0)),
             f"{stats.get('coverage_pct', 0):.0f}%",
             f"{score_val:.0f}",
             kc,
+        )
+
+    # ── Score panel: separate callback so a late mount can't abort the feed ─
+    @app.callback(
+        Output("score-number", "children"),
+        Output("score-grade", "children"),
+        Output("score-grade", "className"),
+        Output("score-subscores", "children"),
+        Input("live-stats-store", "data"),
+    )
+    def render_score_panel(stats):
+        if not stats:
+            return ("0", "—", "score-grade", [])
+        score_full = stats.get("score_full") or {}
+        grade = score_full.get("grade", "—")
+        score_val = stats.get("score", 0)
+        return (
             f"{score_val:.0f}",
             grade.upper().replace("_", " "),
             f"score-grade {grade.lower()}",
