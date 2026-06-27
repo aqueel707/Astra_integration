@@ -246,8 +246,7 @@ async def run_scenario_stream(
     await _verify_session_owner(db, session_id, current_user)
     await crud.update_session_status(db, session_id, "running")
 
-    driver = SessionDriver(session_id=session_id)
-    register_driver(session_id, driver)
+    orch = _get_orchestrator(session_id)
 
     async def _drive():
         try:
