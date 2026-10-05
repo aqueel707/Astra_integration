@@ -91,12 +91,16 @@ def get_engine() -> AsyncEngine:
             # Transaction-mode pooler (Supavisor :6543) can route each
             # transaction to a different backend, which breaks asyncpg's
             # prepared-statement cache. Disable asyncpg's cache and
-            # SQLAlchemy's dialect cache. Harmless on the :5432 session
-            # pooler too, so it's safe regardless of the URL port.
-            connect_args={
-                "statement_cache_size": 0,
-                "prepared_statement_cache_size": 0,
-            },
+            # SQLAlchemy's dialect cache.
+            #
+            # asyncpg ONLY: aiosqlite rejects these with TypeError, which made
+            # the local SQLite fallback described in this module's docstring
+            # impossible to actually use.
+            connect_args=(
+                {"statement_cache_size": 0, "prepared_statement_cache_size": 0}
+                if "asyncpg" in db_url
+                else {}
+            ),
         )
     return _engine
 
@@ -153,6 +157,21 @@ async def init_db() -> None:
     On local SQLite (development fallback), this creates the tables.
     """
     from db.models import Base  # noqa: import here to avoid circular imports
+
+    url = _build_database_url()
+    is_sqlite = url.startswith("sqlite")
+    app_env = get_settings().app_env
+    override = os.environ.get("ASTRA_ALLOW_CREATE_ALL", "").lower() == "true"
+
+    if not (is_sqlite or app_env == "development" or override):
+        # create_all cannot ALTER an existing table, so on a live database a
+        # model change appears to succeed while the column never lands — and
+        # there is no versioned schema to roll back to. Refusing here makes
+        # that failure mode impossible; adopt Alembic before the next schema
+        # change, or set ASTRA_ALLOW_CREATE_ALL=true to bootstrap a new
+        # database deliberately.
+        print(f"[DB] Skipping create_all (app_env={app_env!r}); schema is migration-managed.")
+        return
 
     engine = get_engine()
     async with engine.begin() as conn:
