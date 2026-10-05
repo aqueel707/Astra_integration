@@ -8,14 +8,21 @@ Usage anywhere in the project:
 
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic_settings import BaseSettings
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 from pydantic import Field
+
+logger = logging.getLogger("astra.settings")
 
 
 # ---------------------------------------------------------------------------
@@ -24,23 +31,71 @@ from pydantic import Field
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_yaml_config() -> dict:
-    """Load config.yaml and return as a flat-ish dict."""
+def _load_yaml_config(field_names: set[str] | None = None) -> dict:
+    """Flatten config.yaml onto Settings field names.
+
+    The previous version flattened every nested key to its LEAF name, so
+    `database.url` and `redis.url` both became `url` — redis won by dict order,
+    and neither matched a field, so `extra: "ignore"` silently dropped both.
+    The same happened to `redis.enabled`, `database.echo` and the whole
+    `scoring.weights` block: config.yaml looked like configuration but almost
+    none of it took effect.
+
+    Naming is inconsistent in the file (`server.api_host` maps to the field
+    `api_host`, but `database.url` maps to `database_url`), so try the
+    section-prefixed name first and fall back to the bare key. Anything that
+    matches neither is reported rather than silently discarded.
+    """
     config_path = PROJECT_ROOT / "config.yaml"
     if not config_path.exists():
         return {}
     with open(config_path, "r") as f:
         raw = yaml.safe_load(f) or {}
 
-    # Flatten one level so pydantic can pick up nested keys
-    flat = {}
+    fields = field_names if field_names is not None else set(Settings.model_fields)
+    flat: dict = {}
+    unmapped: list[str] = []
+
     for section, values in raw.items():
-        if isinstance(values, dict):
-            for key, val in values.items():
-                flat[f"{section}_{key}"] if False else flat.update({key: val})
-        else:
-            flat[section] = values
+        if not isinstance(values, dict):
+            if section in fields:
+                flat[section] = values
+            else:
+                unmapped.append(section)
+            continue
+
+        for key, val in values.items():
+            prefixed = f"{section}_{key}"
+            if prefixed in fields:
+                flat[prefixed] = val
+            elif key in fields:
+                flat[key] = val
+            else:
+                unmapped.append(f"{section}.{key}")
+
+    if unmapped:
+        logger.warning(
+            "[settings] config.yaml keys with no matching setting (ignored): %s",
+            ", ".join(sorted(unmapped)),
+        )
     return flat
+
+
+class _YamlSettingsSource(PydanticBaseSettingsSource):
+    """config.yaml as the LOWEST-priority source.
+
+    These values used to be passed to Settings(**yaml) as init kwargs, which
+    pydantic-settings ranks ABOVE environment variables — so config.yaml
+    silently overrode .env and real env vars, the exact opposite of what the
+    module docstring promised.
+    """
+
+    def get_field_value(self, field, field_name):  # pragma: no cover - unused hook
+        return None, field_name, False
+
+    def __call__(self) -> dict:
+        values = _load_yaml_config(set(self.settings_cls.model_fields))
+        return {k: v for k, v in values.items() if v is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +146,24 @@ class Settings(BaseSettings):
     report_output_dir: str = "reports/output"
     report_templates_dir: str = "reports/templates"
 
-    model_config = {
-        "env_file": str(PROJECT_ROOT / ".env"),
-        "env_file_encoding": "utf-8",
-        "extra": "ignore",
-    }
+    model_config = SettingsConfigDict(
+        env_file=str(PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+    ):
+        """Priority, highest first: init kwargs, env vars, .env, config.yaml."""
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            _YamlSettingsSource(settings_cls),
+            file_secret_settings,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +171,9 @@ class Settings(BaseSettings):
 # ---------------------------------------------------------------------------
 @lru_cache()
 def get_settings() -> Settings:
-    """Return a cached Settings instance. Call once at startup."""
-    yaml_defaults = _load_yaml_config()
-    return Settings(**{k: v for k, v in yaml_defaults.items() if v is not None})
+    """Return a cached Settings instance. Call once at startup.
+
+    config.yaml is applied through settings_customise_sources, NOT as init
+    kwargs — passing it here is what made it outrank the environment.
+    """
+    return Settings()
