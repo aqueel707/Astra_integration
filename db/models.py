@@ -85,6 +85,11 @@ class Session(Base):
     attack_events: Mapped[list["AttackEvent"]] = relationship(back_populates="session", cascade="all, delete-orphan")
     log_entries: Mapped[list["LogEntry"]] = relationship(back_populates="session", cascade="all, delete-orphan")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="session", cascade="all, delete-orphan")
+    # Without this, deleting a session that had user-authored rules raised a
+    # foreign-key violation, while alerts/logs/reports all cascaded cleanly.
+    detection_rules: Mapped[list["DetectionRule"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
     reports: Mapped[list["Report"]] = relationship(back_populates="session", cascade="all, delete-orphan")
     score: Mapped[Optional["Score"]] = relationship(back_populates="session", uselist=False, cascade="all, delete-orphan")
 
@@ -167,6 +172,8 @@ class DetectionRule(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     session_id: Mapped[Optional[str]] = mapped_column(ForeignKey("sessions.id"), nullable=True)
 
+    session: Mapped[Optional["Session"]] = relationship(back_populates="detection_rules")
+
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     severity: Mapped[str] = mapped_column(String(10), default="medium")
@@ -191,7 +198,12 @@ class Alert(Base):
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
 
     # What triggered it
-    rule_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)  # FK to detection rule
+    # Soft reference to detection_rules.id, deliberately NOT a foreign key.
+    # Alerts outlive the rule that produced them (a user may delete a rule after
+    # it fires) and correlation/anomaly alerts have no rule at all. Promoting
+    # this to a real constraint is a DDL change and needs a migration, so it
+    # stays documented rather than half-applied.
+    rule_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     detection_type: Mapped[str] = mapped_column(String(20), nullable=False)  # "sigma" or "anomaly"
 
     # Alert details
