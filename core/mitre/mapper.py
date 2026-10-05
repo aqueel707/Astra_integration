@@ -138,6 +138,18 @@ class MitreMapper:
         if not tid:
             return
 
+        # Only confirmed true positives count as coverage.
+        #
+        # The detection pipeline sets is_true_positive from ground truth (did
+        # the matched logs actually come from the attack), so a rule that fired
+        # purely on benign noise arrives here with False. Counting it marked the
+        # technique detected, inflated mitre_coverage_pct, and recorded a dwell
+        # time that improved MTTD — all of it written into the persisted Score.
+        #
+        # api/routers/mitre.py applies the same rule to the read path.
+        if alert.is_true_positive is not True:
+            return
+
         # Find which recorded techniques this alert covers
         matched_tids: list[str] = []
         if tid in self._techniques:

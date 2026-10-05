@@ -34,6 +34,31 @@ from db.models import Score, Session as SessionModel, User
 router = APIRouter()
 
 
+# ── Mode handling ────────────────────────────────────────────────────────────
+# Score columns are SOC-shaped. Pentester runs reuse them with different
+# meanings and a different scale (see core/pentester/finaliser.py), so any
+# cross-session average has to separate them first — otherwise a single
+# pentester run makes the whole skills chart meaningless.
+#
+# Only the pentester finaliser tags details["mode"]; SOC scores predate the
+# field, so an absent mode means SOC.
+def _mode_of(score) -> str:
+    details = score.details or {}
+    if isinstance(details, dict):
+        return details.get("mode", "soc")
+    return "soc"
+
+
+def _soc_only(scores) -> list:
+    return [s for s in scores if _mode_of(s) == "soc"]
+
+
+def _num(value, default: float = 0.0) -> float:
+    """Nullable Float columns: rows written outside the ORM can hold NULL,
+    and sum() over a None raises TypeError."""
+    return default if value is None else float(value)
+
+
 @router.get("/summary")
 async def user_summary(
     current_user: User = Depends(get_current_user),
@@ -61,10 +86,10 @@ async def user_summary(
     return {
         "user_id": user_id,
         "total_sessions": len(scores),
-        "avg_score": round(sum(s.total_score for s in scores) / len(scores), 1),
-        "best_score": round(max(s.total_score for s in scores), 1),
+        "avg_score": round(sum(_num(s.total_score) for s in scores) / len(scores), 1),
+        "best_score": round(max(_num(s.total_score) for s in scores), 1),
         "avg_coverage": round(
-            sum(s.mitre_coverage_pct for s in scores) / len(scores), 1
+            sum(_num(s.mitre_coverage_pct) for s in scores) / len(scores), 1
         ),
     }
 
@@ -86,16 +111,20 @@ async def user_trends(
     result = await db.execute(stmt)
     rows = []
     for score, session in result.all():
-        mode = "soc"
-        meta = getattr(session, "config", None)
-        if isinstance(meta, dict):
-            mode = meta.get("mode", "soc")
+        # Prefer the mode the finaliser recorded on the score. Session.config
+        # is the legacy source and is never populated, so every row came back
+        # tagged "soc" regardless of how it was actually played.
+        mode = _mode_of(score)
+        if mode == "soc":
+            meta = getattr(session, "config", None)
+            if isinstance(meta, dict):
+                mode = meta.get("mode", "soc")
         rows.append({
             "session_id": session.id,
             "scenario": session.scenario_id,
-            "score": float(score.total_score),
+            "score": _num(score.total_score),
             "grade": score.grade,
-            "coverage": float(score.mitre_coverage_pct),
+            "coverage": _num(score.mitre_coverage_pct),
             "mode": mode,
             "date": score.created_at.isoformat() if score.created_at else None,
         })
@@ -117,17 +146,26 @@ async def user_skills(
     result = await db.execute(stmt)
     scores = result.scalars().all()
 
+    # These six labels are SOC metrics. Pentester runs write different
+    # quantities into the same columns, so including them averages
+    # incompatible things.
+    scores = _soc_only(scores)
+
+    empty = {"detection": 0, "mttd": 0, "fp_rate": 0, "containment": 0, "report": 0, "coverage": 0}
     if not scores:
-        return {"detection": 0, "mttd": 0, "fp_rate": 0, "containment": 0, "report": 0, "coverage": 0}
+        return empty
 
     n = len(scores)
     return {
-        "detection":   round(sum(s.detection_rate              for s in scores) / n, 1),
-        "mttd":        round(sum(_mttd_to_score(s.mean_time_to_detect_sec) for s in scores) / n, 1),
-        "fp_rate":     round(sum(_fp_to_score(s.false_positive_rate) for s in scores) / n, 1),
-        "containment": round(sum(s.containment_score           for s in scores) / n, 1),
-        "report":      round(sum(s.report_quality_score        for s in scores) / n, 1),
-        "coverage":    round(sum(s.mitre_coverage_pct          for s in scores) / n, 1),
+        # detection_rate is stored as a 0.0-1.0 fraction; the radar chart this
+        # feeds expects 0-100, so it rendered as ~0.7 out of 100 for every SOC
+        # session the project has ever scored.
+        "detection":   round(sum(_num(s.detection_rate) * 100.0 for s in scores) / n, 1),
+        "mttd":        round(sum(_mttd_to_score(_num(s.mean_time_to_detect_sec)) for s in scores) / n, 1),
+        "fp_rate":     round(sum(_fp_to_score(_num(s.false_positive_rate)) for s in scores) / n, 1),
+        "containment": round(sum(_num(s.containment_score)     for s in scores) / n, 1),
+        "report":      round(sum(_num(s.report_quality_score)  for s in scores) / n, 1),
+        "coverage":    round(sum(_num(s.mitre_coverage_pct)    for s in scores) / n, 1),
     }
 
 
@@ -145,6 +183,9 @@ async def user_tactics(
     )
     result = await db.execute(stmt)
     scores = result.scalars().all()
+
+    # by_tactic is a SOC detection breakdown; pentester scores never carry it.
+    scores = _soc_only(scores)
 
     tactic_used: dict[str, int] = defaultdict(int)
     tactic_detected: dict[str, int] = defaultdict(int)
@@ -191,8 +232,10 @@ async def user_activity(
         if not score.created_at:
             continue
         date_str = score.created_at.date().isoformat()
-        meta = getattr(session, "config", None) or {}
-        mode = meta.get("mode", "soc") if isinstance(meta, dict) else "soc"
+        mode = _mode_of(score)
+        if mode == "soc":
+            meta = getattr(session, "config", None) or {}
+            mode = meta.get("mode", "soc") if isinstance(meta, dict) else "soc"
         counts[(date_str, mode)] += 1
 
     return [

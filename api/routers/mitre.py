@@ -59,7 +59,10 @@ def _load_mitre() -> dict[str, Any]:
 async def get_technique(technique_id: str):
     """Get details for a specific MITRE ATT&CK technique."""
     data = _load_mitre()
-    technique = data["techniques"].get(technique_id.upper())
+    # .get(), like the sibling handler: an unseeded or partial matrix file has
+    # no "techniques" key, and a bare subscript turned that into a 500 instead
+    # of the 404 this endpoint is written to return.
+    technique = (data.get("techniques") or {}).get(technique_id.upper())
     if technique is None:
         raise HTTPException(
             status_code=404,
@@ -105,11 +108,16 @@ async def get_session_coverage(
     attack_events = await crud.get_attack_events(db, session_id)
     used = {ev.technique_id for ev in attack_events if ev.technique_id}
 
-    # Get alerts to find techniques that were detected
+    # Get alerts to find techniques that were detected.
+    #
+    # Only confirmed true positives count. Treating untriaged alerts
+    # (is_true_positive is None) as detections inflated coverage in proportion
+    # to alert volume, so the analyst who triaged nothing scored highest — the
+    # metric rewarded the opposite of the skill being taught.
     alerts = await crud.get_alerts(db, session_id, limit=10_000)
     detected = {
         a.technique_id for a in alerts
-        if a.technique_id and (a.is_true_positive is True or a.is_true_positive is None)
+        if a.technique_id and a.is_true_positive is True
     }
 
     missed = used - detected
