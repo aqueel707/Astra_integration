@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
 from collections import deque
 from typing import Any, Optional
@@ -34,6 +35,11 @@ from dashboard.components.renderers import (
 
 
 logger = logging.getLogger("astra.dashboard.streaming")
+
+# Dash callbacks are synchronous and served from a small worker pool, so a slow
+# API call holds a worker for its whole timeout. 30s was long enough for one
+# wedged upstream to starve the UI; 12s still covers a Render cold start.
+_HTTP_TIMEOUT = 12.0
 
 
 # Maps the dashboard's "mode" picker (mode_picker.py) to the API's `role` field
@@ -59,6 +65,18 @@ _DIFFICULTY_MAP = {
 # ════════════════════════════════════════════════════════════════════════════
 # THREAD-SAFE EVENT BUFFER per session
 # ════════════════════════════════════════════════════════════════════════════
+# What the browser is sent each tick. The deques hold more so late-arriving
+# renders still have context, but shipping all 500 logs + 200 alerts every
+# second was pure waste: the client re-serialised and re-rendered the lot.
+_LOG_WINDOW = 150
+_ALERT_WINDOW = 60
+
+# A buffer nobody has drained for this long belongs to a closed tab.
+_BUFFER_TTL_SEC = 30 * 60
+
+_SPARK_FETCH_EVERY = 10
+
+
 class _SessionBuffer:
     """Bounded thread-safe buffers for logs / alerts / status / scores."""
     def __init__(self, maxlen: int = 500):
@@ -70,20 +88,64 @@ class _SessionBuffer:
         # The OS thread that runs the asyncio loop. Not an asyncio.Task.
         self.worker_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
+        # The worker's loop and task, so a drop can cancel the subscription
+        # instead of waiting for a message that may never arrive.
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.task: Optional[asyncio.Task] = None
+
+        # True totals. The deques are bounded, so len() froze at the cap and
+        # the "events" counter stopped moving partway through a session.
+        self.total_logs = 0
+        self.total_alerts = 0
+
+        # Sparkline history lived in a module-level dict shared by every
+        # visitor, mutated from Dash's multi-threaded handlers with no lock —
+        # so one user's leaderboard fetch populated the chart everyone saw.
+        self.spark_tick = 0
+        self.spark_history: list = []
+
+        self.last_seen = time.monotonic()
 
 
 _buffers: dict[str, _SessionBuffer] = {}
 _buffers_lock = threading.Lock()
 
-_SPARK_FETCH_EVERY = 10
-_spark_state = {"tick": 0, "history": []}
+
+def _prune_buffers_locked(now: float) -> list:
+    """Evict buffers for closed tabs. Caller must hold the lock."""
+    stale = [sid for sid, b in _buffers.items() if now - b.last_seen > _BUFFER_TTL_SEC]
+    return [_buffers.pop(sid) for sid in stale]
 
 
 def _get_buffer(session_id: str) -> _SessionBuffer:
+    now = time.monotonic()
     with _buffers_lock:
-        if session_id not in _buffers:
-            _buffers[session_id] = _SessionBuffer()
-        return _buffers[session_id]
+        evicted = _prune_buffers_locked(now)
+        buf = _buffers.get(session_id)
+        if buf is None:
+            buf = _SessionBuffer()
+            _buffers[session_id] = buf
+        buf.last_seen = now
+    for old in evicted:
+        _stop_worker(old)
+    return buf
+
+
+def _stop_worker(buf: _SessionBuffer) -> None:
+    """Signal the worker and cancel its subscription.
+
+    Setting stop_event alone was not enough: the subscribe loop only checked it
+    after a message arrived, so a quiet session's thread — and the deques it
+    held a reference to — lived until the process exited. Cancelling the task
+    on its own loop unwinds the async generator through its normal teardown.
+    """
+    buf.stop_event.set()
+    loop, task = buf.loop, buf.task
+    if loop is not None and task is not None and not loop.is_closed():
+        try:
+            loop.call_soon_threadsafe(task.cancel)
+        except RuntimeError:
+            pass          # loop already shutting down
 
 
 def _drop_buffer(session_id: str) -> None:
@@ -91,7 +153,7 @@ def _drop_buffer(session_id: str) -> None:
     with _buffers_lock:
         buf = _buffers.pop(session_id, None)
     if buf is not None:
-        buf.stop_event.set()
+        _stop_worker(buf)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -107,11 +169,18 @@ def _start_subscriber(session_id: str):
         # Each thread needs its own event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        buf.loop = loop
         try:
-            loop.run_until_complete(_subscribe_loop(session_id, buf))
+            task = loop.create_task(_subscribe_loop(session_id, buf))
+            buf.task = task
+            loop.run_until_complete(task)
+        except asyncio.CancelledError:
+            logger.debug(f"subscriber cancelled for session={session_id}")
         except Exception as e:
             logger.exception(f"subscriber thread crashed for session={session_id}: {e}")
         finally:
+            buf.task = None
+            buf.loop = None
             try:
                 loop.close()
             except Exception:
@@ -152,8 +221,10 @@ async def _subscribe_loop(session_id: str, buf: _SessionBuffer):
             with buf.lock:
                 if stream_name == "logs":
                     buf.logs.append(payload)
+                    buf.total_logs += 1
                 elif stream_name == "alerts":
                     buf.alerts.append(payload)
+                    buf.total_alerts += 1
                 elif stream_name == "attack_status":
                     buf.attack_status = payload
                 elif stream_name == "scores":
@@ -199,7 +270,7 @@ def register(app):
 
         # ── Step 1: create the session in the DB ─────────────────────────
         try:
-            with httpx.Client(timeout=30.0, headers=auth_headers(token)) as client:
+            with httpx.Client(timeout=_HTTP_TIMEOUT, headers=auth_headers(token)) as client:
                 resp = client.post(
                     f"{api_base}/sessions",
                     json={
@@ -227,7 +298,7 @@ def register(app):
 
         # ── Step 2: kick off the background attack driver ────────────────
         try:
-            with httpx.Client(timeout=30.0, headers=auth_headers(token)) as client:
+            with httpx.Client(timeout=_HTTP_TIMEOUT, headers=auth_headers(token)) as client:
                 run_resp = client.post(
                     f"{api_base}/attacks/run/{scenario}",
                     params={"session_id": session_id, "difficulty": api_difficulty},
@@ -268,8 +339,13 @@ def register(app):
             return no_update, no_update, no_update
         buf = _get_buffer(session_id)
         with buf.lock:
-            logs = list(buf.logs)
-            alerts = list(buf.alerts)
+            # Only the tail goes to the browser. The deques keep more for
+            # context, but re-shipping 500 logs + 200 alerts every second and
+            # re-rendering them client-side was the bulk of the live view's cost.
+            logs = list(buf.logs)[-_LOG_WINDOW:]
+            alerts = list(buf.alerts)[-_ALERT_WINDOW:]
+            total_logs = buf.total_logs
+            total_alerts = buf.total_alerts
             attack_status = dict(buf.attack_status)
             score = dict(buf.score)
 
@@ -285,8 +361,10 @@ def register(app):
         completed_idx = [_phase_to_index(p.lower()) for p in completed if _phase_to_index(p.lower()) >= 0]
 
         stats = {
-            "logs_count": len(logs),
-            "alerts_count": len(alerts),
+            # True totals, not len() of a bounded deque — that froze at the cap
+            # partway through a session and stopped counting.
+            "logs_count": total_logs,
+            "alerts_count": total_alerts,
             "coverage_pct": coverage,
             "score": score_value,
             "current_phase": phase_idx,
@@ -301,8 +379,9 @@ def register(app):
         Output("log-stream-body", "children"),
         Output("log-stream-count", "children"),
         Input("live-logs-store", "data"),
+        Input("live-stats-store", "data"),
     )
-    def render_logs(logs):
+    def render_logs(logs, stats):
         if not logs:
             return [
                 html.Div(
@@ -311,16 +390,18 @@ def register(app):
                 )
             ], "0 events"
         # Show newest first, cap at 200 in the DOM for perf
-        recent = list(reversed(logs))[:200]
-        return [render_log_row(l) for l in recent], f"{len(logs)} events"
+        recent = list(reversed(logs))
+        total = (stats or {}).get("logs_count", len(logs))
+        return [render_log_row(l) for l in recent], f"{total} events"
 
     # ── Render alerts feed ───────────────────────────────────────────────
     @app.callback(
         Output("alerts-stream", "children"),
         Output("alerts-count", "children"),
         Input("live-alerts-store", "data"),
+        Input("live-stats-store", "data"),
     )
-    def render_alerts(alerts):
+    def render_alerts(alerts, stats):
         if not alerts:
             return [
                 html.Div(
@@ -328,8 +409,9 @@ def register(app):
                     className="empty-state",
                 )
             ], "0"
-        recent = list(reversed(alerts))[:50]
-        return [render_alert_card(a) for a in recent], str(len(alerts))
+        recent = list(reversed(alerts))
+        total = (stats or {}).get("alerts_count", len(alerts))
+        return [render_alert_card(a) for a in recent], str(total)
 
     # ── Update stat blocks + kill chain + score panel ───────────────────
     @app.callback(
@@ -382,9 +464,10 @@ def register(app):
         State("api-base", "data"),
         State("auth-token", "data"),
         State("active-mode", "data"),
+        State("active-session", "data"),
         prevent_initial_call=True,
     )
-    def render_donut_and_sparkline(stats, api_base, token, mode):
+    def render_donut_and_sparkline(stats, api_base, token, mode, session_id):
         from dashboard.components.charts import coverage_donut, score_sparkline, empty_chart
         # No live session yet -> the sparkline/donut components may not be mounted
         # (user still on the launcher). Writing to an unmounted output throws
@@ -398,19 +481,33 @@ def register(app):
         used     = mitre.get("techniques_used", 0)     if isinstance(mitre, dict) else 0
         donut = coverage_donut(coverage_pct, detected=detected, total=used)
 
-        # Throttled: hit the leaderboard every _SPARK_FETCH_EVERY ticks,
-        # else reuse cached history. Near-static second-to-second, so this is
-        # invisible to the user but cuts live DB load ~10x.
-        _spark_state["tick"] += 1
-        if _spark_state["tick"] % _SPARK_FETCH_EVERY == 1:
+        # Throttled: hit the leaderboard every _SPARK_FETCH_EVERY ticks, else
+        # reuse cached history. Held per session rather than in a module-level
+        # dict: that was shared by every visitor and mutated from Dash's
+        # multi-threaded handlers, so one user's fetch populated the chart
+        # everyone else saw, and the shared tick made the throttle fire
+        # unpredictably per user.
+        if not session_id:
+            return donut, score_sparkline([], current=stats.get("score"))
+
+        buf = _get_buffer(session_id)
+        with buf.lock:
+            buf.spark_tick += 1
+            should_fetch = buf.spark_tick % _SPARK_FETCH_EVERY == 1
+            history = list(buf.spark_history)
+
+        if should_fetch:
             try:
-                with httpx.Client(timeout=30.0, headers=auth_headers(token)) as client:
+                with httpx.Client(timeout=5.0, headers=auth_headers(token)) as client:
                     r = client.get(f"{api_base}/scoring/leaderboard?limit=10")
                     r.raise_for_status()
-                    _spark_state["history"] = [e.get("total_score", 0) for e in reversed(r.json())]
-            except Exception:
-                pass
-        spark = score_sparkline(_spark_state["history"], current=stats.get("score"))
+                    history = [e.get("total_score", 0) for e in reversed(r.json())]
+                with buf.lock:
+                    buf.spark_history = history
+            except Exception as e:
+                logger.debug(f"[sparkline] leaderboard fetch failed: {e}")
+
+        spark = score_sparkline(history, current=stats.get("score"))
         return donut, spark
 
     # ── Abort button ─────────────────────────────────────────────────────
@@ -430,7 +527,7 @@ def register(app):
             return no_update, no_update, no_update
         # Tell backend to stop
         try:
-            with httpx.Client(timeout=30.0, headers=auth_headers(token)) as client:
+            with httpx.Client(timeout=_HTTP_TIMEOUT, headers=auth_headers(token)) as client:
                 client.post(f"{api_base}/attacks/abort", json={"session_id": session_id})
         except Exception:
             pass
@@ -505,7 +602,7 @@ def register(app):
             body["is_true_positive"] = is_tp
 
         try:
-            with httpx.Client(timeout=30.0, headers=auth_headers(token)) as client:
+            with httpx.Client(timeout=_HTTP_TIMEOUT, headers=auth_headers(token)) as client:
                 resp = client.patch(f"{api_base}/alerts/{alert_id}/triage", json=body)
             if resp.status_code in (200, 201):
                 return f"✓ Triaged as {triage_status.replace('_', ' ')}"
@@ -572,7 +669,7 @@ def register(app):
             return no_update
         # Stop the running session — best-effort
         try:
-            with httpx.Client(timeout=30.0, headers=auth_headers(token)) as client:
+            with httpx.Client(timeout=_HTTP_TIMEOUT, headers=auth_headers(token)) as client:
                 client.post(f"{api_base}/attacks/abort", json={"session_id": session_id})
         except Exception:
             pass

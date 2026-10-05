@@ -198,7 +198,10 @@ def landing_layout() -> html.Iframe:
     standalone page. Its CTAs navigate the top window to /signin."""
     return html.Iframe(
         src="/assets/landing.html",
-        sandbox="allow-scripts allow-top-navigation allow-top-navigation-by-user-activation allow-same-origin",
+        # allow-same-origin removed: combined with allow-scripts it lets the
+        # framed document reach out and remove its own sandbox attribute,
+        # so the restriction was decorative. The landing page needs neither.
+        sandbox="allow-scripts allow-top-navigation allow-top-navigation-by-user-activation",
         style={
             "position": "fixed", "top": 0, "left": 0,
             "width": "100vw", "height": "100vh",
