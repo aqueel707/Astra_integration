@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
@@ -143,6 +144,42 @@ async def _verify_firebase_token(token: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Email verification
+# ---------------------------------------------------------------------------
+
+# Escape hatch for an existing population that signed up before this gate
+# existed. Secure by default; set to "false" only as a temporary measure.
+_REQUIRE_VERIFIED_EMAIL = (
+    os.environ.get("FIREBASE_REQUIRE_VERIFIED_EMAIL", "true").lower() != "false"
+)
+
+
+def _assert_email_verified(decoded: dict) -> None:
+    """Refuse password signups whose address has never been proven.
+
+    Firebase allows open self-signup and does not verify the address, so a
+    password account can be created for someone else's email. Federated
+    providers (google.com, apple.com, ...) have already proven the address
+    themselves, so they are exempt — requiring `email_verified` from them would
+    lock out legitimate users whose provider simply does not set the claim.
+    """
+    provider = (decoded.get("firebase") or {}).get("sign_in_provider", "")
+    if provider and provider != "password":
+        return
+    if not _REQUIRE_VERIFIED_EMAIL:
+        return
+    if decoded.get("email_verified"):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Verify your email address before signing in. "
+            "Check your inbox for the verification link."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # User upsert — maps Firebase UID → our users table
 # ---------------------------------------------------------------------------
 
@@ -165,8 +202,23 @@ async def _get_or_create_user_from_firebase(
     user = result.scalar_one_or_none()
 
     if user is None:
-        # New user — create them
-        username = _derive_username(email, firebase_uid)
+        # `users.email` and `users.username` are both UNIQUE. Creating blindly
+        # raised IntegrityError on a collision, which surfaced to the caller as
+        # an unexplained 500 during sign-in.
+        if email:
+            clash = (
+                await db.execute(select(User).where(User.email == email))
+            ).scalar_one_or_none()
+            if clash is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "That email address is already registered to another "
+                        "account. Sign in with the original provider instead."
+                    ),
+                )
+
+        username = await _unique_username(db, _derive_username(email, firebase_uid))
         user = User(
             id=str(uuid.uuid4()),
             username=username,
@@ -178,13 +230,43 @@ async def _get_or_create_user_from_firebase(
         await db.flush()
         logger.info(f"[firebase] Created new user {user.id} for uid {firebase_uid}")
     else:
-        # Returning user — sync latest email/display_name from Firebase
+        # Returning user — sync latest email/display_name from Firebase, but
+        # never into a value another row already holds: that would turn a
+        # routine sign-in into a constraint violation.
         if email and user.email != email:
-            user.email = email
+            taken = (
+                await db.execute(
+                    select(User.id).where(User.email == email, User.id != user.id)
+                )
+            ).first()
+            if taken is None:
+                user.email = email
+            else:
+                logger.warning(
+                    f"[firebase] email {email!r} already held by another user; "
+                    f"leaving {user.id} unchanged"
+                )
         if display_name and user.display_name != display_name:
             user.display_name = display_name
 
     return user
+
+
+async def _unique_username(db: AsyncSession, base: str) -> str:
+    """Return `base`, or the first free `base_N`, so the UNIQUE column holds.
+
+    Usernames derive from the email local-part, so two providers can easily
+    produce the same one (alice@gmail.com and alice@proton.me).
+    """
+    candidate = base
+    for n in range(1, 50):
+        exists = (
+            await db.execute(select(User.id).where(User.username == candidate))
+        ).first()
+        if exists is None:
+            return candidate
+        candidate = f"{base[:58]}_{n}"
+    return f"{base[:52]}_{uuid.uuid4().hex[:8]}"
 
 
 def _derive_username(email: Optional[str], firebase_uid: str) -> str:
@@ -277,6 +359,9 @@ async def get_current_user(
     # Only allow accounts from approved email providers (see email_allowlist.py)
     assert_allowed_email(email)
 
+    # ...and only if the address has actually been proven for password signups.
+    _assert_email_verified(decoded)
+
     user = await _get_or_create_user_from_firebase(db, uid, email, name)
     return user
 
@@ -295,5 +380,11 @@ async def get_optional_user(
     """
     try:
         return await get_current_user(credentials=credentials, db=db)
-    except HTTPException:
-        return None
+    except HTTPException as exc:
+        # Only "not authenticated" degrades to anonymous. A 503 (Firebase
+        # failed to initialise) or a 403 (email provider not allowed) are
+        # deliberate refusals — swallowing them here silently undid the
+        # fail-closed behaviour get_current_user works to guarantee.
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        raise
