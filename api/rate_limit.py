@@ -15,12 +15,21 @@ Why middleware (not per-route decorators):
   decorate each endpoint. One global cap, wired in one place.
 
 Key strategy:
-  Prefer the Firebase uid when the request carries a bearer token, so
-  authenticated users are limited per-account (important behind a shared campus
-  NAT). Fall back to client IP for anonymous traffic. The uid is read from the
-  UNVERIFIED token payload purely as a bucketing key — real verification still
-  happens in get_current_user, so forging a uid only changes which throttle
-  bucket you land in, never whether you're allowed through.
+  Client IP, always.
+
+  This previously preferred a uid read from the UNVERIFIED token payload, on the
+  reasoning that "forging a uid only changes which throttle bucket you land in,
+  never whether you're allowed through." That reasoning was wrong: the bucket IS
+  the limit. Anyone could mint a syntactically valid unsigned JWT with a random
+  `sub` per request, land in a fresh bucket every time, and never be throttled —
+  and because a bearer token was present, the IP fallback never engaged either.
+
+  Per-account limiting (the original goal, for users behind a shared campus NAT)
+  requires a VERIFIED identity, which this middleware cannot have: it runs before
+  route dependencies resolve, so no token has been checked yet. Adding it means a
+  limit applied downstream of get_current_user, keyed on the verified uid — worth
+  doing, but it belongs with whatever auth provider the project settles on rather
+  than being built against Firebase specifics now.
 
 Resilience:
   Redis is pinged synchronously at startup. If it's unreachable, we log a
@@ -56,33 +65,13 @@ logger = logging.getLogger("astra.rate_limit")
 DEFAULT_LIMIT = os.getenv("RATE_LIMIT_DEFAULT", "120/minute")
 
 
-def _uid_from_unverified_jwt(token: str) -> str | None:
-    """Best-effort extract user_id/sub from a JWT payload WITHOUT verifying.
-    Returns None on anything malformed (caller falls back to IP)."""
-    import base64
-    import binascii
-    import json
-
-    try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None
-        payload_b64 = parts[1]
-        padding = "=" * (-len(payload_b64) % 4)  # JWT is base64url, no padding
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
-        uid = claims.get("user_id") or claims.get("sub") or claims.get("uid")
-        return str(uid) if uid else None
-    except (ValueError, binascii.Error, json.JSONDecodeError):
-        return None
-
-
 def _client_key(request: Request) -> str:
-    """Bucket key: Firebase uid if a bearer token is present, else client IP."""
-    auth = request.headers.get("authorization") or ""
-    if auth.lower().startswith("bearer "):
-        uid = _uid_from_unverified_jwt(auth[7:].strip())
-        if uid:
-            return f"uid:{uid}"
+    """Bucket key: client IP, always.
+
+    Deliberately ignores the Authorization header. Deriving the key from an
+    unverified token let a caller choose their own bucket, which is not a
+    throttle at all — see the module docstring.
+    """
     return f"ip:{get_remote_address(request)}"
 
 
