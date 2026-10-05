@@ -35,6 +35,13 @@ async def lifespan(app: FastAPI):
     # Init database
     await init_db()
 
+    # Resolve the streaming backend at startup so the deploy log states which
+    # one is live. Picking it lazily on first publish meant a misconfiguration
+    # only showed up as an empty dashboard, with nothing in the logs to explain it.
+    from streaming.backend import get_backend
+    print(f"    Streaming: {get_backend().name}")
+    print()
+
     yield
 
     # Cleanup

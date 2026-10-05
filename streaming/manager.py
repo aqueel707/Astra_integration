@@ -25,7 +25,7 @@ from typing import Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from streaming.backend import get_backend
-from streaming.channels import StreamType, channel_for
+from streaming.channels import StreamType, all_channels_for
 
 
 logger = logging.getLogger("astra.ws")
@@ -56,6 +56,11 @@ class ConnectionManager:
     def __init__(self):
         self._rooms: dict[str, _SessionRoom] = {}
         self._lock = asyncio.Lock()
+        # Strong references to in-flight cleanup tasks. The event loop only
+        # holds weak ones, so a bare create_task() can be garbage-collected
+        # mid-execution — leaving a dead socket in the room, which then never
+        # empties, so its consumer is never cancelled.
+        self._cleanup_tasks: set[asyncio.Task] = set()
 
     # ════════════════════════════════════════════════════════════════════════
     # CONNECT / DISCONNECT
@@ -80,7 +85,7 @@ class ConnectionManager:
             # Lazy-start the consumer for this session
             if room.consumer_task is None or room.consumer_task.done():
                 room.consumer_task = asyncio.create_task(
-                    self._run_consumer(session_id, streams)
+                    self._run_consumer(session_id)
                 )
 
         logger.info(
@@ -120,19 +125,24 @@ class ConnectionManager:
     # ════════════════════════════════════════════════════════════════════════
     # CONSUMER LOOP  (one per active session)
     # ════════════════════════════════════════════════════════════════════════
-    async def _run_consumer(
-        self,
-        session_id: str,
-        streams: list[StreamType],
-    ) -> None:
+    async def _run_consumer(self, session_id: str) -> None:
         """
-        Subscribe to all relevant channels for a session and fan out to clients.
+        Subscribe to every channel for a session and fan out to its clients.
 
         We subscribe ONCE per session (not per client), so a session with
         10 connected dashboards still reads the streams once.
+
+        Deliberately subscribes to ALL stream types rather than the ones the
+        first client asked for. The consumer is created once, on first connect,
+        so keying it to that client's stream set meant a later client asking
+        for more (?streams=logs,alerts against a room opened with ?streams=logs)
+        was registered as wanting alerts while nothing was subscribed to the
+        alerts channel — it silently received nothing. Per-client filtering
+        already happens in the fan-out below, so subscribing broadly is correct
+        and costs one Redis subscription per stream type per session.
         """
         backend = get_backend()
-        channels = [channel_for(session_id, s) for s in streams]
+        channels = all_channels_for(session_id)
 
         try:
             async for channel, message in backend.subscribe(*channels):
@@ -162,7 +172,9 @@ class ConnectionManager:
                 # Clean up dead websockets after the iteration so we don't
                 # mutate the dict while looping over the snapshot.
                 for ws in dead_websockets:
-                    asyncio.create_task(self.disconnect(ws))
+                    task = asyncio.create_task(self.disconnect(ws))
+                    self._cleanup_tasks.add(task)
+                    task.add_done_callback(self._cleanup_tasks.discard)
         except asyncio.CancelledError:
             logger.debug(f"[ws] consumer for session={session_id} cancelled")
             raise

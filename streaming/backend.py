@@ -227,10 +227,20 @@ def get_backend(force_memory: bool = False) -> StreamingBackend:
 
     if redis_enabled:
         _backend_instance = RedisBackend(url=redis_url)
-        logger.info(f"[streaming] Using RedisBackend at {redis_url}")
+        # Redact credentials: the URL carries the password, and this line
+        # lands in deploy logs. Mirrors the redaction in api/rate_limit.py.
+        logger.info(f"[streaming] Using RedisBackend at {redis_url.split('@')[-1]}")
     else:
         _backend_instance = InMemoryBackend()
-        logger.info("[streaming] Using InMemoryBackend (Redis disabled in config)")
+        # WARNING, not info: in-memory pub/sub only works when publisher and
+        # subscriber share a process. The deployed topology runs the API and
+        # the dashboard as separate services, so this configuration silently
+        # produces an empty live feed. Set REDIS_ENABLED=true in production.
+        logger.warning(
+            "[streaming] REDIS_ENABLED is false -> InMemoryBackend. "
+            "Pub/sub cannot cross process boundaries: any subscriber outside "
+            "this process (e.g. the dashboard service) will receive nothing."
+        )
 
     return _backend_instance
 
