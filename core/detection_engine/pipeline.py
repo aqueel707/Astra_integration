@@ -24,6 +24,8 @@ Returns a flat list of AlertSchema objects per call.
 
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +36,9 @@ from core.detection_engine.anomaly_detector import AnomalyDetector
 from core.detection_engine.correlation import CorrelationEngine
 from core.detection_engine.rule_manager import RuleManager
 from core.detection_engine.sigma_parser import evaluate_rule
+
+
+logger = logging.getLogger("astra.detection.pipeline")
 
 
 class DetectionPipeline:
@@ -144,13 +149,41 @@ class DetectionPipeline:
     # ════════════════════════════════════════════════════════════════════════
     # SIGMA STAGE
     # ════════════════════════════════════════════════════════════════════════
+    def _scope_for_rule(
+        self,
+        rule,
+        all_logs: list[LogEntry],
+        only_new: list[LogEntry],
+    ) -> list[LogEntry]:
+        """Choose the smallest log set that can still evaluate this rule.
+
+        A rule with no aggregation and no timeframe is stateless — whether a
+        log matches depends on that log alone — so it only ever needs the new
+        logs. Feeding it the whole buffer re-derived matches that were already
+        emitted and then discarded them, which was ~99% of the work late in a
+        session.
+
+        Rules that DO aggregate need history, but only as far back as their own
+        timeframe. Only a rule that aggregates with no timeframe at all needs
+        the entire buffer.
+        """
+        if not rule.aggregation and not rule.timeframe_seconds:
+            return only_new
+
+        if rule.timeframe_seconds and only_new:
+            newest = max(log.timestamp for log in only_new)
+            cutoff = newest - timedelta(seconds=rule.timeframe_seconds)
+            return [log for log in all_logs if log.timestamp >= cutoff]
+
+        return all_logs
+
     def _run_sigma(
         self,
         all_logs: list[LogEntry],
         only_new: list[LogEntry],
     ) -> list[AlertSchema]:
         """
-        Run every active Sigma rule against the log buffer.
+        Run every active Sigma rule against the smallest sufficient log scope.
         Only emit alerts whose evidence includes at least one of the new logs
         (to avoid re-emitting an old match on every batch).
         """
@@ -158,10 +191,15 @@ class DetectionPipeline:
         alerts = []
 
         for rule in self.rule_manager.active_rules():
+            scope = self._scope_for_rule(rule, all_logs, only_new)
+            if not scope:
+                continue
             try:
-                matches = evaluate_rule(rule, all_logs)
+                matches = evaluate_rule(rule, scope)
             except Exception as e:
-                print(f"[PIPELINE] Rule {rule.name} failed: {e}")
+                # A rule that cannot be evaluated is a rule authoring problem;
+                # log it properly rather than printing into stdout.
+                logger.warning("Sigma rule %r failed to evaluate: %s", rule.name, e)
                 continue
 
             for matched_logs in matches:
