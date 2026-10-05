@@ -26,3 +26,7 @@ secrets/
 # local patch backups + one-off runners
 *.bak_*
 fix_*.py
+
+# UI preview gallery — generated from the real layouts by web/snapshot.py.
+# Build output: regenerate it rather than tracking 20k+ lines of HTML.
+web/

@@ -1,0 +1,33 @@
+# Secrets — the Firebase service-account key grants impersonation of any user
+# in the project. COPY . . would otherwise bake it into an image layer.
+.env
+.env.*
+!.env.example
+secrets/
+
+# Local data
+*.db
+*.sqlite
+*.sqlite-journal
+
+# Local dev environment
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# VCS + editor
+.git/
+.gitignore
+.vscode/
+
+# One-shot patch scripts and their backups — not part of the app
+fix_*.py
+apply_*.py
+*.bak
+*.bak_*
+
+# Docs / build artefacts
+reports/output/
+web/
