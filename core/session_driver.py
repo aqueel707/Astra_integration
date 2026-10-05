@@ -273,8 +273,17 @@ class SessionDriver:
                 logger.debug(f"[driver] publish_log failed: {e}")
 
         # 7. Detection pipeline
+        #
+        # process_logs is fully synchronous and CPU-bound: Sigma evaluation plus
+        # scikit-learn IsolationForest scoring. Awaited inline it blocked the
+        # whole event loop — every other request, health check and WebSocket
+        # send in the process stalled for its duration. Off to a thread.
+        #
+        # Safe to thread: the pipeline is per-session and the driver awaits each
+        # step in turn, so there is never more than one call in flight against
+        # this instance.
         try:
-            new_alerts = self.pipeline.process_logs(all_logs)
+            new_alerts = await asyncio.to_thread(self.pipeline.process_logs, all_logs)
         except Exception as e:
             logger.exception(f"[driver] detection pipeline crashed: {e}")
             new_alerts = []

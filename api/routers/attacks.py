@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -55,16 +56,37 @@ router = APIRouter()
 # Each session gets its own orchestrator so two concurrent sessions can each
 # have their own loaded scenario without clobbering each other.
 _orchestrators: dict[str, AttackOrchestrator] = {}
+_orchestrator_seen: dict[str, float] = {}
 _orchestrators_lock = threading.Lock()
+
+# Sessions are capped at 60 minutes (settings.max_session_duration_minutes), so
+# anything untouched for two hours is abandoned: the user closed the tab without
+# aborting, and nothing will ever remove it. Without this the dict only ever
+# grew, and on a 512MB instance an authenticated user could walk it to OOM
+# inside the rate limit.
+_ORCHESTRATOR_TTL_SEC = 2 * 60 * 60
+
+
+def _prune_orchestrators_locked(now: float) -> None:
+    """Drop abandoned orchestrators. Caller must hold the lock."""
+    stale = [sid for sid, seen in _orchestrator_seen.items() if now - seen > _ORCHESTRATOR_TTL_SEC]
+    for sid in stale:
+        _orchestrators.pop(sid, None)
+        _orchestrator_seen.pop(sid, None)
+    if stale:
+        logger.info(f"[attacks] evicted {len(stale)} abandoned orchestrator(s)")
 
 
 def _get_orchestrator(session_id: str) -> AttackOrchestrator:
-    """Get or create the orchestrator for a session."""
+    """Get or create the orchestrator for a session, pruning abandoned ones."""
+    now = time.monotonic()
     with _orchestrators_lock:
+        _prune_orchestrators_locked(now)
         orch = _orchestrators.get(session_id)
         if orch is None:
             orch = AttackOrchestrator()
             _orchestrators[session_id] = orch
+        _orchestrator_seen[session_id] = now
         return orch
 
 
@@ -72,6 +94,7 @@ def _drop_orchestrator(session_id: str) -> None:
     """Remove the orchestrator for a session (after completion or abort)."""
     with _orchestrators_lock:
         _orchestrators.pop(session_id, None)
+        _orchestrator_seen.pop(session_id, None)
 
 
 async def _verify_session_owner(db: AsyncSession, session_id: str, current_user: User):
@@ -244,9 +267,23 @@ async def run_scenario_stream(
     arrives out-of-band via the streaming backend.
     """
     await _verify_session_owner(db, session_id, current_user)
+
+    # Refuse a second concurrent launch for the same session. Without this,
+    # two calls would register two drivers writing attack events and logs for
+    # one session_id, and race each other's score write at the end.
+    if get_driver(session_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A scenario is already running for this session. POST /attacks/abort first.",
+        )
+
     await crud.update_session_status(db, session_id, "running")
 
-    orch = _get_orchestrator(session_id)
+    # The SessionDriver is the only thing that publishes logs/alerts/score to
+    # the streaming backend. It must be constructed and registered BEFORE the
+    # task starts, so /attacks/abort can find it via get_driver().
+    driver = SessionDriver(session_id=session_id)
+    register_driver(session_id, driver)
 
     async def _drive():
         try:
