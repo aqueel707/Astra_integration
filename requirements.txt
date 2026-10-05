@@ -1,7 +1,13 @@
 # ── Web framework ─────────────────────────────────────────────────────────
-fastapi==0.115.5
+# 0.128.x pulls starlette 0.52.x, clearing 2 of the 8 starlette advisories.
+# The remaining 6 need starlette 1.x, which restructures routing so that
+# app.routes no longer exposes .path/.dependant — that silently turns the
+# auth-coverage guard in tests/test_api/test_alerts_auth.py into a no-op.
+# Verified: 0.141.1 mounts only 16 of 51 routes for introspection.
+# Upgrading past 1.x needs that guard rewritten first.
+fastapi==0.128.8
 uvicorn==0.32.1
-python-multipart==0.0.17
+python-multipart==0.0.31   # 6 advisories fixed through 0.0.31
 websockets==13.1
 httpx==0.27.2
 
@@ -12,6 +18,11 @@ plotly==5.24.1
 
 # ── Database — Postgres + asyncpg (replaces aiosqlite for production) ─────
 sqlalchemy==2.0.36
+# SQLAlchemy's async layer REQUIRES greenlet, but only declares it under a
+# conditional marker, so a clean install can silently omit it — and then every
+# database call raises "the greenlet library is required to use this function"
+# at runtime. Declared explicitly so the app cannot be installed without it.
+greenlet==3.1.1
 asyncpg==0.30.0
 # Keep aiosqlite for local development fallback
 aiosqlite==0.20.0
@@ -30,8 +41,8 @@ faker==30.8.2
 pydantic==2.9.2
 pydantic-settings==2.6.1
 pyyaml==6.0.2
-python-dotenv==1.0.1
-jinja2==3.1.4
+python-dotenv==1.2.2      # PYSEC-2026-2270
+jinja2==3.1.6          # CVE-2024-56326 / CVE-2025-27516 (sandbox escape)
 rich==13.9.4
 apscheduler==3.10.4
 fpdf2==2.8.1
