@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -35,11 +35,33 @@ class ReportTemplateOut(BaseModel):
 # ════════════════════════════════════════════════════════════════════════════
 # Drafts
 # ════════════════════════════════════════════════════════════════════════════
+# Bounds for submitted report bodies. The evaluator runs several regex passes
+# over the concatenated sections synchronously on the event loop, so an
+# unbounded body is a denial-of-service vector, not just a storage concern.
+# The title bound also matches the Report.title column (String(256)), which
+# previously turned an over-long title into a database error.
+MAX_SECTIONS = 40
+MAX_SECTION_CHARS = 20_000
+MAX_TITLE_CHARS = 200
+
+
 class DraftIn(BaseModel):
     """Submitted by the dashboard when the student saves a draft."""
     report_type: str = Field(..., description="incident or pentest")
     content: dict[str, str] = Field(default_factory=dict, description="section_id → text")
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, max_length=MAX_TITLE_CHARS)
+
+    @field_validator("content")
+    @classmethod
+    def _bound_content(cls, v: dict[str, str]) -> dict[str, str]:
+        if len(v) > MAX_SECTIONS:
+            raise ValueError(f"too many sections (max {MAX_SECTIONS})")
+        for key, text in v.items():
+            if len(text) > MAX_SECTION_CHARS:
+                raise ValueError(
+                    f"section '{key}' exceeds {MAX_SECTION_CHARS} characters"
+                )
+        return v
 
 
 class DraftOut(BaseModel):

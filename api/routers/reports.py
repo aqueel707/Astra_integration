@@ -250,6 +250,22 @@ async def submit_report(
 
     session = await verify_session_owner(db, session_id, current_user)
 
+    # A submitted report is final. save_draft already refuses edits once
+    # quality_score is set; submit_report did not, so a report could be
+    # rescored indefinitely against a deterministic evaluator. Checked before
+    # the evaluator runs so a rejected resubmission costs nothing.
+    already = await db.execute(
+        select(Report)
+        .where(Report.session_id == session_id)
+        .where(Report.report_type == body.report_type)
+    )
+    prior = already.scalar_one_or_none()
+    if prior is not None and prior.quality_score is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Report already submitted; it cannot be resubmitted.",
+        )
+
     # Pull session facts
     facts = await collect_session_facts(session_id, db)
     if facts is None:

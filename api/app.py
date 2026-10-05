@@ -4,6 +4,7 @@ FastAPI application factory — creates and configures the main API app.
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -55,6 +56,25 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+_DEFAULT_ORIGINS = (
+    "https://astra-dashboard-qu4c.onrender.com",
+    "http://localhost:8050",
+    "http://127.0.0.1:8050",
+)
+
+
+def _allowed_origins() -> list[str]:
+    """CORS origins, overridable without a code change.
+
+    The dashboard hostname used to be compiled in, so any rename broke the UI
+    with an opaque browser-side CORS failure — while every other
+    deployment-specific value already came from the environment.
+    """
+    raw = os.environ.get("ASTRA_ALLOWED_ORIGINS", "")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins or list(_DEFAULT_ORIGINS)
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
@@ -72,11 +92,7 @@ def create_app() -> FastAPI:
     # allow_origins=["*"] with allow_credentials=True is invalid anyway.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "https://astra-dashboard-qu4c.onrender.com",
-            "http://localhost:8050",
-            "http://127.0.0.1:8050",
-        ],
+        allow_origins=_allowed_origins(),
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -129,17 +145,14 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(progress_router, prefix="/progress", tags=["Progress"])
     app.include_router(reports_router, prefix="/reports", tags=["Reports"])
 
-    # Block 2 (attacks router)
-    try:
-        from api.routers.attacks import router as attacks_router
-        app.include_router(attacks_router, prefix="/attacks", tags=["Attacks"])
-    except ImportError:
-        pass
+    # Block 2 (attacks) and the Pentester decision-tree mode.
+    #
+    # These were wrapped in try/except: a typo in either module removed the
+    # whole feature and the app still booted reporting healthy, with the
+    # failure visible only as a missing route. Neither is optional, so an
+    # import error should stop the process while someone is watching.
+    from api.routers.attacks import router as attacks_router
+    from api.routers.pentester import router as pentester_router
 
-    # Pentester decision-tree mode
-    try:
-        from api.routers.pentester import router as pentester_router
-        app.include_router(pentester_router, prefix="/pentester", tags=["Pentester"])
-    except Exception as e:
-        import logging
-        logging.getLogger("astra.api").exception(f"Pentester router not mounted: {e}")
+    app.include_router(attacks_router, prefix="/attacks", tags=["Attacks"])
+    app.include_router(pentester_router, prefix="/pentester", tags=["Pentester"])

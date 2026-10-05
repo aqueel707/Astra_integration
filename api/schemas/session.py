@@ -43,4 +43,8 @@ class SessionResponse(BaseModel):
 
 class SessionStatusUpdate(BaseModel):
     """Request body for updating session status."""
-    status: str = Field(..., pattern="^(running|paused|completed|aborted)$")
+    # 'paused' is deliberately absent: nothing in the driver or the UI can
+    # pause or resume a session, so accepting it only moved a session into a
+    # state it could not act on. Existing paused rows can still transition out
+    # (see the transition table in api/routers/sessions.py).
+    status: str = Field(..., pattern="^(running|completed|aborted)$")

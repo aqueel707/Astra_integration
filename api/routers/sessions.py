@@ -141,11 +141,15 @@ async def update_session_status(
         "aborted": [],
     }
 
-    if body.status not in valid_transitions.get(session.status, []):
+    allowed = valid_transitions.get(session.status, [])
+    if body.status not in allowed:
+        # .get() in the message too: a row in an unexpected state (e.g. one
+        # written by an older build) raised KeyError building this string,
+        # turning a 400 into a 500.
         raise HTTPException(
             status_code=400,
             detail=f"Cannot transition from '{session.status}' to '{body.status}'. "
-                   f"Valid transitions: {valid_transitions[session.status]}",
+                   f"Valid transitions: {allowed}",
         )
 
     await crud.update_session_status(db, session_id, body.status)
