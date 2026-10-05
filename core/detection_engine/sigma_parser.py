@@ -84,6 +84,11 @@ def parse_sigma_rule(yaml_text: str, rule_id: Optional[str] = None) -> SigmaRule
     raw_condition = detection.get("condition", "selection")
     aggregation = _parse_aggregation(raw_condition)
 
+    # Validate the condition here rather than at evaluation time: a rule the
+    # evaluator cannot honour must be rejected by /detection/rules/validate,
+    # not silently reinterpreted against live traffic.
+    parse_condition(raw_condition, selections.keys())
+
     # Parse timeframe (e.g. "5m", "1h")
     timeframe_seconds = _parse_timeframe(detection.get("timeframe"))
 
@@ -141,7 +146,7 @@ def evaluate_rule(rule: SigmaRule, logs: list[LogEntry]) -> list[list[LogEntry]]
         ]
 
     # 3. Combine selections per the condition expression
-    matched_logs = _evaluate_condition(rule.condition, selection_matches)
+    matched_logs = _evaluate_condition(rule.condition, selection_matches, candidate_logs)
 
     if not matched_logs:
         return []
@@ -299,54 +304,168 @@ def _lt(a: Any, b: Any) -> bool:
         return False
 
 
-# ─── Condition expression evaluation ────────────────────────────────────────
+# ─── Condition expression parsing ───────────────────────────────────────────
+#
+# Sigma conditions are a small boolean language over selection names:
+#
+#     selection
+#     selection and not filter
+#     (sel_a or sel_b) and not noise
+#
+# This used to be handled with substring checks — `" and " in cond`, `" or " in
+# cond` — with a fallback that returned the FIRST selection's matches for
+# anything it did not recognise. Two consequences:
+#
+#   • `not` was never implemented, so `selection and not filter` silently
+#     dropped the exclusion and fired on everything it was meant to suppress.
+#   • The AND branch intersected `set(LogEntry)`, and LogEntry is a Pydantic
+#     model with __eq__ and no __hash__ — so every `and` condition raised
+#     TypeError, was swallowed upstream, and the rule never fired at all.
+#
+# It is now a proper recursive-descent parser over:
+#
+#     expr   := term ( 'or' term )*
+#     term   := factor ( 'and' factor )*
+#     factor := 'not' factor | '(' expr ')' | IDENT
+#
+# Anything outside that grammar raises ValueError at PARSE time, so
+# /detection/rules/validate rejects it instead of the evaluator guessing.
+
+_AGG_SUFFIX = re.compile(r"\|\s*count.*$", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\(|\)|[A-Za-z_][\w*]*|\d+")
+
+
+def _strip_aggregation(condition: str) -> str:
+    """Remove a trailing `| count(...) > N`; aggregation is applied separately."""
+    return _AGG_SUFFIX.sub("", condition or "selection").strip()
+
+
+def _tokenize_condition(cond: str) -> list[str]:
+    tokens = _TOKEN_RE.findall(cond)
+    # Anything the tokenizer skipped is a character we do not understand.
+    if "".join(tokens) != re.sub(r"\s+", "", cond):
+        raise ValueError(f"Unsupported characters in condition: {cond!r}")
+    return tokens
+
+
+class _ConditionParser:
+    """Recursive-descent parser producing a nested-tuple AST."""
+
+    def __init__(self, tokens: list[str], known: set[str]):
+        self._tokens = tokens
+        self._pos = 0
+        self._known = known
+
+    # ── token helpers ──
+    def _peek(self) -> Optional[str]:
+        return self._tokens[self._pos] if self._pos < len(self._tokens) else None
+
+    def _next(self) -> Optional[str]:
+        tok = self._peek()
+        if tok is not None:
+            self._pos += 1
+        return tok
+
+    # ── grammar ──
+    def parse(self):
+        node = self._expr()
+        if self._peek() is not None:
+            raise ValueError(
+                f"Unexpected token {self._peek()!r} in condition"
+            )
+        return node
+
+    def _expr(self):
+        node = self._term()
+        while (self._peek() or "").lower() == "or":
+            self._next()
+            node = ("or", node, self._term())
+        return node
+
+    def _term(self):
+        node = self._factor()
+        while (self._peek() or "").lower() == "and":
+            self._next()
+            node = ("and", node, self._factor())
+        return node
+
+    def _factor(self):
+        tok = self._next()
+        if tok is None:
+            raise ValueError("Condition ended unexpectedly")
+
+        lowered = tok.lower()
+        if lowered == "not":
+            return ("not", self._factor())
+        if tok == "(":
+            node = self._expr()
+            if self._next() != ")":
+                raise ValueError("Unbalanced parenthesis in condition")
+            return node
+        if tok == ")":
+            raise ValueError("Unbalanced parenthesis in condition")
+        if lowered in ("and", "or"):
+            raise ValueError(f"Condition starts with operator {tok!r}")
+
+        # `1 of them` / `all of them` are valid Sigma but not implemented here.
+        # Name them explicitly so the rule author gets a useful message rather
+        # than a generic parse error.
+        if (self._peek() or "").lower() == "of" or lowered in ("all", "them"):
+            raise ValueError(
+                "'x of them' / 'all of them' conditions are not supported yet; "
+                "list the selections explicitly (e.g. 'sel_a or sel_b')"
+            )
+        if tok not in self._known:
+            raise ValueError(
+                f"Condition references unknown selection {tok!r}; "
+                f"defined selections are {sorted(self._known)}"
+            )
+        return ("ident", tok)
+
+
+def parse_condition(condition: str, known_selections) -> tuple:
+    """Validate + parse a condition. Raises ValueError if unusable."""
+    cond = _strip_aggregation(condition)
+    tokens = _tokenize_condition(cond)
+    if not tokens:
+        raise ValueError("Condition is empty")
+    return _ConditionParser(tokens, set(known_selections)).parse()
+
+
+def _eval_ast(node: tuple, sel_ids: dict[str, set], universe: set) -> set:
+    """Evaluate the AST to a set of matching log ids."""
+    kind = node[0]
+    if kind == "ident":
+        return sel_ids.get(node[1], set())
+    if kind == "and":
+        return _eval_ast(node[1], sel_ids, universe) & _eval_ast(node[2], sel_ids, universe)
+    if kind == "or":
+        return _eval_ast(node[1], sel_ids, universe) | _eval_ast(node[2], sel_ids, universe)
+    if kind == "not":
+        # Negation is relative to the candidate pool, which is what Sigma means
+        # by "events that do not match" — not the empty set.
+        return universe - _eval_ast(node[1], sel_ids, universe)
+    raise ValueError(f"Unknown condition node {kind!r}")
+
+
 def _evaluate_condition(
     condition: str,
     selection_matches: dict[str, list[LogEntry]],
+    candidate_logs: list[LogEntry],
 ) -> list[LogEntry]:
+    """Combine selections per the condition expression.
+
+    Works on log ids rather than LogEntry objects: the models are unhashable,
+    which is what made every `and` condition raise.
     """
-    Combine selection results per the condition expression.
+    ast = parse_condition(condition, selection_matches.keys())
 
-    Supported forms:
-        "selection"                   → just return that selection's matches
-        "sel1 and sel2"              → logs matching both
-        "sel1 or sel2"               → logs matching either
-        "sel | count(...) > N"       → return all matched logs (aggregation handled later)
+    sel_ids = {name: {log.id for log in logs} for name, logs in selection_matches.items()}
+    universe = {log.id for log in candidate_logs}
 
-    For unsupported expressions, default to the first selection.
-    """
-    # Strip aggregation suffix; the matched logs are still the selection's
-    cond = re.sub(r"\|\s*count.*$", "", condition or "selection").strip()
-
-    # Just a single selection name
-    if cond in selection_matches:
-        return selection_matches[cond]
-
-    # AND
-    if " and " in cond:
-        parts = [p.strip() for p in cond.split(" and ")]
-        sets = [set(selection_matches.get(p, [])) for p in parts]
-        if not sets:
-            return []
-        common = sets[0]
-        for s in sets[1:]:
-            common &= s
-        return list(common)
-
-    # OR
-    if " or " in cond:
-        parts = [p.strip() for p in cond.split(" or ")]
-        result = []
-        seen = set()
-        for p in parts:
-            for log in selection_matches.get(p, []):
-                if log.id not in seen:
-                    seen.add(log.id)
-                    result.append(log)
-        return result
-
-    # Fallback: first selection
-    return next(iter(selection_matches.values()), [])
+    matched = _eval_ast(ast, sel_ids, universe)
+    # Preserve candidate order, and de-duplicate by construction.
+    return [log for log in candidate_logs if log.id in matched]
 
 
 # ─── Aggregation handling (count() > N within timeframe) ────────────────────

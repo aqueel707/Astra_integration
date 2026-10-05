@@ -16,8 +16,8 @@ user. Non-default rules are scoped to the session that created them.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_db
@@ -33,6 +33,10 @@ from core.detection_engine.sigma_parser import parse_sigma_rule
 from db import crud
 from db.models import DetectionRule, User
 
+# A session's rules are all evaluated on every batch, so this is a performance
+# ceiling as much as a storage one.
+MAX_RULES_PER_SESSION = 100
+
 router = APIRouter()
 
 
@@ -41,6 +45,7 @@ router = APIRouter()
 async def list_rules(
     session_id: str | None = None,
     enabled_only: bool = False,
+    limit: int = Query(200, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -58,7 +63,9 @@ async def list_rules(
         )
     else:
         stmt = stmt.where(DetectionRule.is_default == True)
-    stmt = stmt.order_by(DetectionRule.created_at.desc())
+    # Bounded: the listing had no LIMIT, so it returned every rule the caller
+    # could see in one response.
+    stmt = stmt.order_by(DetectionRule.created_at.desc()).limit(limit)
 
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -107,6 +114,21 @@ async def create_rule(
             detail="session_id is required — rules are scoped to a session you own.",
         )
     await verify_session_owner(db, body.session_id, current_user)
+
+    # Cap rules per session. Every active rule is re-parsed and evaluated
+    # against each incoming log batch, so an unbounded count degrades the
+    # session that owns it and burns a worker thread doing it.
+    existing = await db.execute(
+        select(func.count())
+        .select_from(DetectionRule)
+        .where(DetectionRule.session_id == body.session_id)
+    )
+    if (existing.scalar() or 0) >= MAX_RULES_PER_SESSION:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This session already has the maximum of {MAX_RULES_PER_SESSION} rules. "
+                   f"Delete one before adding another.",
+        )
 
     # Validate the YAML
     try:

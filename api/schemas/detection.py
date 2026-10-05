@@ -10,22 +10,30 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
+# Bounds for rule input. A Sigma rule is a small YAML document — real ones are
+# well under a kilobyte. Unbounded, rule_yaml was accepted at megabytes, then
+# yaml.safe_load-ed, stored in a Text column, and re-parsed and evaluated
+# against every log batch for the life of the session.
+MAX_RULE_YAML_CHARS = 20_000
+MAX_RULE_DESC_CHARS = 2_000
+
+
 # ─── Rule schemas ────────────────────────────────────────────────────────────
 class RuleCreate(BaseModel):
     """Body for creating a new user detection rule."""
     name: str = Field(..., min_length=1, max_length=128)
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=MAX_RULE_DESC_CHARS)
     severity: str = Field("medium", pattern="^(info|low|medium|high|critical)$")
-    rule_yaml: str = Field(..., min_length=10)
+    rule_yaml: str = Field(..., min_length=10, max_length=MAX_RULE_YAML_CHARS)
     session_id: Optional[str] = None  # If None, rule is global
 
 
 class RuleUpdate(BaseModel):
     """Body for updating a rule (all fields optional)."""
-    name: Optional[str] = None
-    description: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=128)
+    description: Optional[str] = Field(None, max_length=MAX_RULE_DESC_CHARS)
     severity: Optional[str] = Field(None, pattern="^(info|low|medium|high|critical)$")
-    rule_yaml: Optional[str] = None
+    rule_yaml: Optional[str] = Field(None, min_length=10, max_length=MAX_RULE_YAML_CHARS)
     enabled: Optional[bool] = None
 
 

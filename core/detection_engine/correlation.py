@@ -229,11 +229,19 @@ class CorrelationEngine:
 
     # ── Reset for a new session ──────────────────────────────────────────────
     def reset(self, session_id: Optional[str] = None) -> None:
+        """Clear correlation state.
+
+        _fired keys are (pattern, shared_field, context) with no session in
+        them. One CorrelationEngine is constructed per DetectionPipeline, i.e.
+        per session, so clearing it wholesale is correct — and necessary:
+        resetting a session used to leave its fired-markers behind, which
+        suppressed the same pattern from ever firing again on this engine.
+        """
         if session_id:
             self._buffers.pop(session_id, None)
         else:
             self._buffers.clear()
-            self._fired.clear()
+        self._fired.clear()
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

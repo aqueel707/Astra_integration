@@ -29,6 +29,10 @@ import numpy as np
 
 from core.log_engine.schemas import LogEntry
 
+import logging
+
+logger = logging.getLogger("astra.detection.anomaly")
+
 
 # Lazy import so the project still works if scikit-learn isn't installed
 # at the time of import (it'll fail at fit time instead).
@@ -129,7 +133,7 @@ class AnomalyDetector:
         Returns True on success, False if not enough data or sklearn missing.
         """
         if not _SKLEARN_AVAILABLE:
-            print("[ANOMALY] scikit-learn not available — skipping baseline fit.")
+            logger.warning("scikit-learn not available - skipping baseline fit.")
             return False
 
         if len(self._baseline_buffer) < 20:

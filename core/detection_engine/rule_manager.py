@@ -25,6 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.detection_engine.sigma_parser import SigmaRule, parse_sigma_rule
 from db import crud
 
+import logging
+
+logger = logging.getLogger("astra.detection.rules")
+
 
 # ─── Disk locations ──────────────────────────────────────────────────────────
 DEFAULT_RULES_DIR = Path(__file__).parent / "rules" / "default"
@@ -73,7 +77,7 @@ class RuleManager:
                 count += 1
             except Exception as e:
                 # Don't fail the whole load over one bad file
-                print(f"[RULE_MGR] Failed to parse {path.name}: {e}")
+                logger.warning("Failed to parse rule file %s: %s", path.name, e)
         return count
 
     async def load_user_rules_from_db(
@@ -109,7 +113,7 @@ class RuleManager:
                 self._names_seen.add(parsed.name.strip().lower())
                 count += 1
             except Exception as e:
-                print(f"[RULE_MGR] Failed to parse DB rule {rule_row.name}: {e}")
+                logger.warning("Failed to parse DB rule %r: %s", rule_row.name, e)
         return count
 
     def add_rule_from_yaml(self, yaml_text: str, rule_id: Optional[str] = None) -> SigmaRule:
