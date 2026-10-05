@@ -39,6 +39,14 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_B64
         sync: false
+      # Streaming pub/sub. BOTH services must point at the SAME Redis, or the
+      # dashboard's live feed stays empty: the API publishes from its own
+      # process and the dashboard subscribes from another, so an in-process
+      # backend can never bridge them. Set REDIS_URL in the Render dashboard.
+      - key: REDIS_ENABLED
+        value: "true"
+      - key: REDIS_URL
+        sync: false
 
   # ── Dash dashboard ───────────────────────────────────────────────────────
   - type: web
@@ -68,3 +76,11 @@ services:
         value: "true"
       - key: FIREBASE_PROJECT_ID
         value: astra-cyber
+      # Streaming pub/sub. BOTH services must point at the SAME Redis, or the
+      # dashboard's live feed stays empty: the API publishes from its own
+      # process and the dashboard subscribes from another, so an in-process
+      # backend can never bridge them. Set REDIS_URL in the Render dashboard.
+      - key: REDIS_ENABLED
+        value: "true"
+      - key: REDIS_URL
+        sync: false
