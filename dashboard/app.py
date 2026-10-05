@@ -93,100 +93,137 @@ app.index_string = """<!DOCTYPE html>
 
 
 # ─── Auth view (sign in + create account) ───────────────────────────────────
-def auth_layout() -> html.Div:
-    """Dark terminal-style auth. IDs are the contract with firebase-auth.js.
-    Tab toggle and panel show/hide are pure client-side (no Dash callback)."""
+def _field(label: str, input_id: str, **kw) -> html.Div:
+    """A labelled field. Password fields get a reveal toggle.
+
+    Every id here is a contract with assets/firebase-auth.js — that module
+    reads them by getElementById and by the .auth-reveal / data-for pair.
+    """
+    is_password = kw.get("type") == "password"
+    control = [dcc.Input(id=input_id, className="auth-input", **kw)]
+    if is_password:
+        control.append(
+            html.Button(
+                "Show",
+                className="auth-reveal",
+                **{"data-for": input_id, "aria-label": "Show password"},
+                n_clicks=0,
+                type="button",
+            )
+        )
     return html.Div(
+        [
+            html.Label(label, htmlFor=input_id, className="auth-label"),
+            html.Div(control, className="auth-control"),
+        ],
+        className="auth-field",
+    )
+
+
+def auth_layout() -> html.Div:
+    """Sign-in / create-account screen.
+
+    Two panes: the left states what the account is for, the right is the form.
+    The IDs are the contract with firebase-auth.js — auth-error, auth-notice,
+    auth-resend, auth-forgot, the auth-panel-* wrappers and the .auth-tab
+    buttons with data-mode. Tab switching and panel visibility stay pure
+    client-side, with no Dash callback.
+    """
+    signin_panel = html.Div(
+        [
+            _field("Email", "login-email", type="email",
+                   placeholder="you@domain.com", autoComplete="username"),
+            _field("Password", "login-password", type="password",
+                   placeholder="Your password", autoComplete="current-password"),
+            html.Div(
+                html.Button("Reset password", id="auth-forgot",
+                            className="auth-link", n_clicks=0, type="button"),
+                className="auth-row-end",
+            ),
+            html.Button("Sign in", id="login-submit", n_clicks=0, className="auth-btn"),
+        ],
+        id="auth-panel-signin",
+        className="auth-panel",
+    )
+
+    signup_panel = html.Div(
+        [
+            _field("Email", "signup-email", type="email",
+                   placeholder="you@domain.com", autoComplete="username"),
+            _field("Password", "signup-password", type="password",
+                   placeholder="At least 6 characters", autoComplete="new-password"),
+            # The API refuses other providers after the Firebase account already
+            # exists, so say it up front rather than letting someone find out
+            # from a 403 they cannot act on.
+            html.Div(
+                [
+                    html.Span("Accepted providers", className="auth-hint-label"),
+                    html.Span("Gmail · DuckDuckGo · Proton · Tuta · iCloud",
+                              className="auth-hint-value"),
+                ],
+                className="auth-hint",
+            ),
+            html.Button("Create account", id="signup-submit", n_clicks=0, className="auth-btn"),
+        ],
+        id="auth-panel-signup",
+        className="auth-panel",
+        style={"display": "none"},
+    )
+
+    form_pane = html.Div(
         [
             html.Div(
                 [
-                    html.Div(
-                        [
-                            html.Span("ASTRA", className="auth-brand"),
-                            html.Span("CYBER RANGE", className="auth-brand-sub"),
-                        ],
-                        className="auth-brand-wrap",
-                    ),
-                    html.Div(
-                        [
-                            html.Button(
-                                "Sign in",
-                                className="auth-tab is-active",
-                                **{"data-mode": "signin"},
-                            ),
-                            html.Button(
-                                "Create account",
-                                className="auth-tab",
-                                **{"data-mode": "signup"},
-                            ),
-                        ],
-                        className="auth-tabs",
-                    ),
-
-                    # ── Sign in panel ──────────────────────────────────
-                    html.Div(
-                        [
-                            dcc.Input(
-                                id="login-email",
-                                type="email",
-                                placeholder="you@domain.com",
-                                className="auth-input",
-                                autoComplete="username",
-                            ),
-                            dcc.Input(
-                                id="login-password",
-                                type="password",
-                                placeholder="Password",
-                                className="auth-input",
-                                autoComplete="current-password",
-                            ),
-                            html.Button(
-                                "Sign in →",
-                                id="login-submit",
-                                n_clicks=0,
-                                className="auth-btn",
-                            ),
-                        ],
-                        id="auth-panel-signin",
-                        className="auth-panel",
-                    ),
-
-                    # ── Sign up panel (hidden until tab switch) ─────────
-                    html.Div(
-                        [
-                            dcc.Input(
-                                id="signup-email",
-                                type="email",
-                                placeholder="you@domain.com",
-                                className="auth-input",
-                                autoComplete="username",
-                            ),
-                            dcc.Input(
-                                id="signup-password",
-                                type="password",
-                                placeholder="Password (min 6 characters)",
-                                className="auth-input",
-                                autoComplete="new-password",
-                            ),
-                            html.Button(
-                                "Create account →",
-                                id="signup-submit",
-                                n_clicks=0,
-                                className="auth-btn",
-                            ),
-                        ],
-                        id="auth-panel-signup",
-                        className="auth-panel",
-                        style={"display": "none"},
-                    ),
-
-                    html.Div(id="auth-error", className="auth-error"),
-
+                    html.Button("Sign in", className="auth-tab is-active",
+                                n_clicks=0, type="button", **{"data-mode": "signin"}),
+                    html.Button("Create account", className="auth-tab",
+                                n_clicks=0, type="button", **{"data-mode": "signup"}),
                 ],
-                className="auth-card",
+                className="auth-tabs",
+                role="tablist",
             ),
-            html.Div("SECURE ACCESS · FIREBASE", className="auth-foot"),
+            signin_panel,
+            signup_panel,
+            html.Div(id="auth-error", className="auth-error", role="alert"),
+            html.Div(id="auth-notice", className="auth-notice", role="status"),
+            html.Button("Resend verification", id="auth-resend",
+                        className="auth-resend", n_clicks=0, type="button"),
         ],
+        className="auth-form-pane",
+    )
+
+    intro_pane = html.Div(
+        [
+            html.Div(
+                [
+                    html.Span("ASTRA", className="auth-brand"),
+                    html.Span("CYBER RANGE", className="auth-brand-sub"),
+                ],
+                className="auth-brand-wrap",
+            ),
+            html.P(
+                "Multi-stage attack scenarios, scored against MITRE ATT&CK. "
+                "Hunt the intrusion in a live log stream, or plan it move by move.",
+                className="auth-intro-lede",
+            ),
+            html.Ul(
+                [
+                    html.Li("Detection scored technique by technique"),
+                    html.Li("Live log triage under real time pressure"),
+                    html.Li("Branching red-team engagements"),
+                ],
+                className="auth-intro-list",
+            ),
+            html.Div(
+                [html.Span(className="auth-dot"), "Secure access · Firebase"],
+                className="auth-intro-foot",
+            ),
+        ],
+        className="auth-intro-pane",
+    )
+
+    return html.Div(
+        html.Div([intro_pane, form_pane], className="auth-card"),
         className="auth-page",
     )
 
